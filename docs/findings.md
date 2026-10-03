@@ -144,10 +144,32 @@ which is a number, not an iterable. Runtime `TypeError`.
 
 ---
 
+## F7 — An axis domain inside a single decade rendered no labels
+
+**Severity.** Low, but user-visible as a broken chart.
+
+**What happened.** `decadeTicks` generated `10^floor(log10(lo))` through
+`10^ceil(log10(hi))` and then **filtered to ticks inside the domain**. For a
+domain like `[5e16, 9e16]` — entirely between two decades — every generated tick
+fell outside, so the filter returned `[]` and the x-axis rendered with no tick
+labels at all. Nothing threw; the chart simply looked wrong.
+
+**Fix.** If no decade lands inside the domain, return the domain endpoints. An
+unlabelled axis reads as a defect, and silence is the wrong failure mode here.
+
+**Reproducer.** `decadeTicks([5e16, 9e16])` in `src/lib/scales.test.ts`.
+
+---
+
 ## Notes on the test suite itself
 
 Two checks in `verify_data.py` were wrong in ways that *looked* like data
 corruption, and one tolerance was too tight:
+
+- Three of the first four `scales.test.ts` failures were **my test expectations**
+  being wrong, not the code: `b = ab/(a+b)` is 0.12 for (0.2, 0.3), not between
+  0.15 and 0.2; `formatCompute(5e18)` keeps one decimal because its mantissa is 5;
+  and 250e15 is 250 *peta*flops, not exa. The one genuine bug in that run was F7.
 
 - Comparing exponents at `round(alpha, 3) == printed` failed on `audio_8bit`,
   where the underlying fit is `0.2605` and the authors printed `0.260`. The fit

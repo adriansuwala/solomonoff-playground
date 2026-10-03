@@ -80,15 +80,24 @@ export function formatPowerOfTen(exponent: number): string {
   return `10${digits}`
 }
 
-/** Log10 decade ticks covering a domain, e.g. [1e15, 1e16, ...]. */
+/**
+ * Log10 decade ticks covering a domain, e.g. [1e15, 1e16, ...].
+ *
+ * When the domain sits entirely between two decades, no round decade falls
+ * inside it and the axis would come up blank, so the domain endpoints are used
+ * instead. An unlabelled axis reads as a broken chart.
+ */
 export function decadeTicks(domain: [number, number]): number[] {
   const [lo, hi] = domain
   if (!(lo > 0) || !(hi > 0)) return []
-  const ticks: number[] = []
   const start = Math.floor(Math.log10(lo))
   const end = Math.ceil(Math.log10(hi))
   // Guard against a pathological domain producing thousands of ticks.
   if (end - start > 24) return []
-  for (let e = start; e <= end; e++) ticks.push(Math.pow(10, e))
-  return ticks.filter((t) => t >= lo && t <= hi)
+  const inside: number[] = []
+  for (let e = start; e <= end; e++) {
+    const t = Math.pow(10, e)
+    if (t >= lo && t <= hi) inside.push(t)
+  }
+  return inside.length > 0 ? inside : [lo, hi]
 }
