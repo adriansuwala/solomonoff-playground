@@ -89,7 +89,7 @@ ARMS = {
         "short": "Self-play",
         "csv": "selfplay_frontier_perk.csv",
         "color": "#2a9d8f",
-        "dash": null,
+        "dash": None,          # solid line
         "blurb": "Learned program distribution, RL on learning progress (§2.2, Figure 2).",
     },
     "uniform": {
