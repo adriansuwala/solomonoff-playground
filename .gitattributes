@@ -1,0 +1,11 @@
+# Vendored third-party data. Not ours to attribute line-by-line.
+vendor/** linguist-vendored
+vendor/**
+
+# Generated data bundle: produced by tools/build_data.py from vendor/.
+public/data/** linguist-generated
+public/data/**
+
+# Generated TypeScript types from the data bundle.
+src/data/generated/** linguist-generated
+src/data/generated/**
