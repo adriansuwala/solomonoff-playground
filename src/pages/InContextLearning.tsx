@@ -28,6 +28,7 @@ import {
 import {
   ChartFrame, HoverReadout, Series, formatTick, niceTicks, useTooltip,
 } from '@/components/Chart'
+import { decadeTicks } from '@/lib/scales'
 import type {
   IclArm, IclData, IclFile, IclRow, Meta, SumBehavior,
 } from '@/data/types'
@@ -538,11 +539,13 @@ function SweepExplorer({ icl, meta }: { icl: IclData; meta: Meta }) {
       </div>
 
       <Claim reference="fig4" also={['sec3.2']}>
-        Self-play improves consistently across all six tasks, not just the
-        easy ones. The universal-prior arm shows little evidence of effective
-        in-context learning on this whole family — it sits at or near 0.0% on
-        almost every task, where PCFG manages a few percent. So this is not a
-        case of "any program-pretrained model learns to use context".
+        Self-play improves on all six tasks, though by very different margins:
+        first and last saturate at 100%, sum reaches 87.5%, max and min land
+        near 65–69%, and mean is the outlier at 12.5% — flooring a mean of
+        several bytes is much harder than summing two. The universal-prior arm
+        shows almost no effective in-context learning on this family at all
+        (its best single cell across all 222 is 3.1%), so this is not a case of
+        "any program-pretrained model learns to use context".
       </Claim>
 
       <Disclosure summary="Why the k axis is the interesting one">
@@ -589,20 +592,25 @@ function ArmChart({
         xLabel={xLabel}
         yLabel={yLabel}
       >
-        {({ x, y, innerWidth }) => (
+        {({ x, y, innerWidth, innerHeight }) => (
           <g>
-            {/* One label per swept m. On a log axis the powers of two are
-                evenly spaced, so all of them fit; the decade ticks ChartFrame
-                draws underneath only duplicate m = 1, which we skip. */}
+            {/* One label per swept m, in the tick row ChartFrame already
+                reserves. ChartFrame also prints power-of-ten ticks there, so
+                any power of two that would collide with one is dropped rather
+                than overprinted -- the decade label reads as the same scale. */}
             <g className="chart__tick">
-              {ms.map((m) => (
-                m === 1 ? null : (
-                  <text key={`lab${m}`} x={x(m)} y={innerHeight + 32}
+              {ms.map((m) => {
+                const decades = decadeTicks([lo, hiM])
+                // 34px of clearance in a ~640px plot: enough for a 3-digit
+                // label plus a power-of-ten label on either side of it.
+                if (decades.some((d) => Math.abs(x(d) - x(m)) < 34)) return null
+                return (
+                  <text key={`lab${m}`} x={x(m)} y={innerHeight + 18}
                         textAnchor="middle">
                     {m}
                   </text>
                 )
-              ))}
+              })}
             </g>
             <line
               x1={0} x2={innerWidth} y1={y(CHANCE)} y2={y(CHANCE)}
@@ -1161,9 +1169,11 @@ function CompositionChart({
 }
 
 function EntropyChart({ rows }: { rows: SumBehavior[] }) {
+  // Anchor the top of the axis at the 8.0-bit uniform reference with headroom,
+  // so the reference line is visibly inside the plot rather than on its edge.
   const lo = Math.min(...rows.map((r) => r.entropyQ25Bits))
-  const hi = Math.max(8, Math.max(...rows.map((r) => r.entropyQ75Bits)))
-  const pad = (hi - lo) * 0.08
+  const hi = Math.max(...rows.map((r) => r.entropyQ75Bits))
+  const pad = Math.max((hi - lo) * 0.08, 0.05)
   const dom: [number, number] = [lo - pad, hi + pad]
   const innerHeight = 260 - STRIP.top - STRIP.bottom
   const toPx = (v: number): number =>
