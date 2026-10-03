@@ -458,22 +458,52 @@ def build_math() -> dict:
 # 5. In-context learning.
 # ---------------------------------------------------------------------------
 def _flatten_icl(results: dict, prefix: str) -> list:
-    """`{task|m|k|metric: v}` -> row dicts. Metric names differ across harness
-    versions, so keep every metric rather than assuming acc/p_correct."""
+    """`{task|coord|coord|metric: v}` -> row dicts. Metric names differ across
+    harness versions, so keep every metric rather than assuming acc/p_correct.
+
+    The harness uses two key conventions. v3/v4 name their axes (`m=8|k=2`,
+    `m=128|V=64`), but run_icl.py writes bare positional keys (`max|8|2`) in
+    file/ms/ks order. Only the named convention used to parse, so every row of
+    icl_results -- the main Figure 4 sweep -- arrived with m and k null and
+    could not be plotted at all. Bare keys are positional, not unnamed: for
+    icl_results that means m then k, and the surrounding `ms`/`ks` lists on the
+    file give the axes. assoc|extra=N|V=16 is named but on axes the UI wants
+    kept apart, so `extra` and `V` become their own fields.
+
+    Coordinates that genuinely cannot be resolved are left null and
+    tools/verify_data.py asserts that the main sweep is fully resolved, because
+    a silently-null axis is worse than a loud failure: it looks like a chart
+    with no data.
+    """
     rows = []
     for key, metrics in results.items():
         parts = key.split("|")
         task = parts[0]
-        m = k = None
-        for p in parts[1:]:
+        m = k = v = extra = None
+        rest = parts[1:]
+        # Bare tokens are positional coordinates, except a valueless flag like
+        # `extra` or `V`, which carries no number.
+        bare = [q for q in rest if "=" not in q and q.isdigit()]
+        for p in rest:
             if p.startswith("m="):
                 m = int(p[2:])
             elif p.startswith("k="):
                 k = int(p[2:])
             elif p.startswith("L="):
                 k = int(p[2:])
+            elif p.startswith("V="):
+                v = int(p[2:])
+            elif p.startswith("extra="):
+                # `extra=2` in one harness, bare `extra` in the other.
+                extra = int(p[6:]) if len(p) > 6 else 0
+        if bare:
+            nums = [int(q) for q in bare]
+            if len(nums) == 2:
+                m, k = nums
+            elif len(nums) == 1:
+                m = nums[0]
         rows.append({
-            "task": task, "m": m, "k": k,
+            "task": task, "m": m, "k": k, "v": v, "extra": extra,
             "metrics": {mk: (round(mv, 6) if isinstance(mv, float) else mv)
                         for mk, mv in metrics.items()},
         })

@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react'
 import { Async } from '@/components/UI'
 import { loadMeta } from '@/data/loaders'
 import { makeResolver, SectionProvider } from '@/lib/sections'
-import type { SectionKey } from '@/data/types'
+import type { Meta, SectionKey } from '@/data/types'
 
 import { Overview } from '@/pages/Overview'
 import { Method } from '@/pages/Method'
@@ -52,54 +52,71 @@ export function App() {
 
   return (
     <Async load={loadMeta}>
-      {(meta) => {
-        const resolve = useMemo(() => makeResolver(meta.sections), [meta])
-        const active = NAV.find((n) => n.id === page) ?? NAV[0]!
-        const groups = [...new Set(NAV.map((n) => n.group))]
-        return (
-          <SectionProvider value={resolve}>
-            <div className="app">
-              <nav className="sidebar" aria-label="Sections">
-                <div className="sidebar__title">{meta.paper.title}</div>
-                <div className="sidebar__subtitle">
-                  arXiv:{meta.paper.arxiv} · an interactive reading
-                </div>
-                {groups.map((g) => (
-                  <div key={g}>
-                    <div className="sidebar__group">{g}</div>
-                    {NAV.filter((n) => n.group === g).map((n) => (
-                      <a
-                        key={n.id}
-                        className={`sidebar__link${n.id === active.id ? ' sidebar__link--active' : ''}`}
-                        href={`#${n.id}`}
-                        aria-current={n.id === active.id ? 'page' : undefined}
-                        onClick={(e) => { e.preventDefault(); setPage(n.id) }}
-                      >
-                        {n.label}
-                      </a>
-                    ))}
-                  </div>
-                ))}
-              </nav>
-              <main className="main">
-                {active.render()}
-                <div className="footer">
-                  <p>
-                    Every figure on these pages is recomputed in the browser from
-                    data released by the paper's authors at{' '}
-                    <a href={meta.paper.codeRepo} target="_blank" rel="noreferrer">
-                      {meta.paper.codeRepo}
-                    </a>
-                    {' '}and cross-checked against the paper's own tables. Nothing
-                    here is transcribed by hand.
-                  </p>
-                  <p>{meta.provenance.license}</p>
-                </div>
-              </main>
-            </div>
-          </SectionProvider>
-        )
-      }}
+      {(meta) => <Shell meta={meta} page={page} onNavigate={setPage} />}
     </Async>
+  )
+}
+
+/**
+ * Split out of App so the resolver's useMemo is a hook of a component rather
+ * than of the render callback Async invokes. A callback passed to Async is not
+ * a component boundary: Async skips calling it on the loading pass, so any
+ * hook inside it changes hook count between renders and React tears the tree
+ * down with "rendered more hooks than during the previous render". That blanked
+ * every page.
+ */
+function Shell({
+  meta, page, onNavigate,
+}: {
+  meta: Meta
+  page: string
+  onNavigate: (id: string) => void
+}) {
+  const resolve = useMemo(() => makeResolver(meta.sections), [meta])
+  const active = NAV.find((n) => n.id === page) ?? NAV[0]!
+  const groups = [...new Set(NAV.map((n) => n.group))]
+
+  return (
+    <SectionProvider value={resolve}>
+      <div className="app">
+        <nav className="sidebar" aria-label="Sections">
+          <div className="sidebar__title">{meta.paper.title}</div>
+          <div className="sidebar__subtitle">
+            arXiv:{meta.paper.arxiv} · an interactive reading
+          </div>
+          {groups.map((g) => (
+            <div key={g}>
+              <div className="sidebar__group">{g}</div>
+              {NAV.filter((n) => n.group === g).map((n) => (
+                <a
+                  key={n.id}
+                  className={`sidebar__link${n.id === active.id ? ' sidebar__link--active' : ''}`}
+                  href={`#${n.id}`}
+                  aria-current={n.id === active.id ? 'page' : undefined}
+                  onClick={(e) => { e.preventDefault(); onNavigate(n.id) }}
+                >
+                  {n.label}
+                </a>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <main className="main">
+          {active.render()}
+          <div className="footer">
+            <p>
+              Every figure on these pages is recomputed in the browser from
+              data released by the paper's authors at{' '}
+              <a href={meta.paper.codeRepo} target="_blank" rel="noreferrer">
+                {meta.paper.codeRepo}
+              </a>
+              {' '}and cross-checked against the paper's own tables. Nothing
+              here is transcribed by hand.
+            </p>
+            <p>{meta.provenance.license}</p>
+          </div>
+        </main>
+      </div>
+    </SectionProvider>
   )
 }

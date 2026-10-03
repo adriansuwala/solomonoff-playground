@@ -9,16 +9,13 @@
  * confident it is. Figure 4 says the accuracy goes up; Figure 5 says the
  * model changes strategy to make it go up.
  *
- * Data-shape note, because it shapes a lot of this file. `tools/build_data.py`
- * parses the `m=`/`k=`/`L=` key forms into IclRow.m/IclRow.k, but three of the
- * six released result files use bare positional keys (`sum|8|2`,
- * `assoc|m=8|V=4`, `assoc|extra=2|V=16`). Those rows arrive with m and/or k
- * null. `sweepGrid` and `assocGroups` below recover the sweep coordinates from
- * the row order plus the files' own `ms`/`ks` arrays, and hand back null when
- * the reconstruction does not line up exactly — in which case the page says
- * "not measured" instead of drawing an axis with no data on it. Nothing here
- * invents a number; the reconstruction only recovers indices the harness
- * already recorded.
+ * Data-shape note, because it shapes a little of this file. The harness keys
+ * come in two conventions: named (`m=8|k=2`, `m=128|V=64`, from v3/v4) and bare
+ * positional (`max|8|2`, from run_icl.py). `tools/build_data.py` now parses
+ * both, so every row of the main sweep carries a real m and k, and
+ * `tools/verify_data.py` fails the build if any cell is unresolved. The
+ * lookups below stay null-guarded anyway, so a combination with no data renders
+ * as "not measured" rather than as a line drawn through missing values.
  */
 import { useMemo, useState, type ReactNode } from 'react'
 import { loadIcl, loadMeta } from '@/data/loaders'
@@ -75,75 +72,25 @@ const pct = (v: number | null | undefined, digits = 1): string =>
 // Coordinate recovery for the positional-key files
 // ---------------------------------------------------------------------------
 
-/** The harness's context budget, and the fixed prompt prefix cost. */
-const CONTEXT_BYTES = 4096
-const PROMPT_PREFIX = 1
-
-interface Cell { task: string; m: number; k: number }
-
 /**
- * Recover (task, m, k) for a sweep file whose keys were `task|m|k` and whose
- * rows therefore carry null m and k. The harness emitted, for each task in
- * turn, every m x k pair in ascending order, skipping pairs whose prompt would
- * overflow the context. Both facts are checked against the row count before the
- * result is used.
- */
-function sweepGrid(file: IclFile | undefined): Cell[] | null {
-  if (!file) return null
-  const ms = file.ms
-  const ks = file.ks
-  if (!ms || !ks || ms.length === 0 || ks.length === 0) return null
-
-  const pairs: [number, number][] = []
-  for (const m of ms) {
-    for (const k of ks) {
-      if (PROMPT_PREFIX + m * (k + 2) + k + 1 > CONTEXT_BYTES) continue
-      pairs.push([m, k])
-    }
-  }
-
-  const tasks: string[] = []
-  for (const r of file.rows) if (!tasks.includes(r.task)) tasks.push(r.task)
-
-  let cursor = 0
-  const grid: Cell[] = []
-  for (const task of tasks) {
-    const own = file.rows.filter((r) => r.task === task).length
-    if (own !== pairs.length) return null
-    for (const [m, k] of pairs) {
-      grid.push({ task, m, k })
-      cursor += 1
-    }
-  }
-  return grid.length === file.rows.length ? grid : null
-}
-
-/**
- * The three associative-recall dictionary sizes in icl_v3_results, keyed by
- * `V=`. V was dropped by the flattener, but the file emitted one contiguous,
- * strictly m-increasing block per V, so the blocks recover V by position.
+ * The three associative-recall dictionary sizes in icl_v3_results, keyed by the
+ * harness's `V=` axis.
  */
 const ASSOC_V = [4, 16, 64] as const
-/** The largest dictionary size in the sweep: where the arms actually differ. */
+/** The largest size in the sweep: where the three arms actually separate. */
 const ASSOC_V_MAX: number = ASSOC_V[2]
 
-interface AssocGroup { v: number; rows: IclRow[] }
-
-function assocGroups(file: IclFile | undefined): AssocGroup[] | null {
-  if (!file) return null
-  const rows = file.rows.filter((r) => r.task === 'assoc' && r.m !== null)
-  const groups: AssocGroup[] = []
-  for (const row of rows) {
-    const head = groups[groups.length - 1]
-    const m = row.m ?? 0
-    if (head && m > (head.rows[head.rows.length - 1]?.m ?? Infinity)) {
-      head.rows.push(row)
-    } else {
-      groups.push({ v: ASSOC_V[groups.length] ?? -1, rows: [row] })
-    }
-  }
-  if (groups.length !== ASSOC_V.length) return null
-  return groups.some((g) => g.v < 0) ? null : groups
+/**
+ * File coordinates are now resolved upstream: tools/build_data.py parses both
+ * the named harness keys (`m=8|k=2`, `m=128|V=64`) and the bare positional ones
+ * (`max|8|2`) that run_icl.py writes, and tools/verify_data.py fails the build
+ * if the main sweep has an unresolved cell. These helpers therefore read m and
+ * k straight off the row and stay null-guarded, so an unplottable combination
+ * renders as "not measured" rather than as a line through missing values.
+ */
+function sweepRows(file: IclFile | undefined, task: string, k: number): IclRow[] {
+  if (!file) return []
+  return file.rows.filter((r) => r.task === task && r.k === k && r.m !== null)
 }
 
 // ---------------------------------------------------------------------------
@@ -162,18 +109,15 @@ function sweepSeries(
   task: string, k: number, metric: string,
 ): Pt[] | null {
   const file = armOf(icl, arm)?.files[fileName]
-  const grid = sweepGrid(file)
-  if (!file || !grid) return null
+  if (!file) return null
   const out: Pt[] = []
-  file.rows.forEach((row, i) => {
-    const cell = grid[i]
-    if (!cell || cell.task !== task || cell.k !== k) return
+  for (const row of sweepRows(file, task, k)) {
+    if (row.m === null) continue
     const v = row.metrics[metric]
-    if (v === undefined) return
-    out.push({ m: cell.m, v, p: row.metrics['p_correct'] ?? null })
-  })
-  if (out.length === 0) return null
-  return out.sort((a, b) => a.m - b.m)
+    if (v === undefined) continue
+    out.push({ m: row.m, v, p: row.metrics['p_correct'] ?? null })
+  }
+  return out.length > 0 ? out.sort((a, b) => a.m - b.m) : null
 }
 
 /** One cell of the main sweep, for the numbers quoted in prose. */
@@ -203,17 +147,26 @@ function extraSeries(
 function assocSeries(
   icl: IclData, arm: IclArmKey, v: number,
 ): Pt[] | null {
-  const groups = assocGroups(armOf(icl, arm)?.files['icl_v3_results'])
-  const group = groups?.find((g) => g.v === v)
-  if (!group) return null
+  const file = armOf(icl, arm)?.files['icl_v3_results']
+  if (!file) return null
   const out: Pt[] = []
-  for (const row of group.rows) {
-    if (row.m === null) continue
+  for (const row of file.rows) {
+    if (row.task !== 'assoc' || row.v !== v || row.m === null) continue
     const a = row.metrics['acc']
     if (a === undefined) continue
     out.push({ m: row.m, v: a, p: row.metrics['p_correct'] ?? null })
   }
   return out.length > 0 ? out.sort((a, b) => a.m - b.m) : null
+}
+
+/** First and last cell of the extra-dictionary-prints sweep, as a range. */
+function assocDictEnds(icl: IclData, arm: IclArmKey): string {
+  const rows = (armOf(icl, arm)?.files['icl_assoc_dict_results']?.rows ?? [])
+    .filter((r) => r.extra !== null)
+    .sort((a, b) => (a.extra ?? 0) - (b.extra ?? 0))
+  const a = rows[0]?.metrics['acc']
+  const b = rows[rows.length - 1]?.metrics['acc']
+  return a !== undefined && b !== undefined ? `${pct(a)} → ${pct(b)}` : '—'
 }
 
 /** Accuracy in the largest-m cell of a series, for the numbers quoted in prose. */
@@ -246,13 +199,14 @@ function m0(icl: IclData, arm: IclArmKey, task: string, metric: string): number 
 }
 
 /** The 4096-trial sum cells for m <= 4, which the main sweep does not cover. */
-const SUM_LOW_M = [0, 1, 2, 3, 4]
 function sumLowM(icl: IclData, arm: IclArmKey): number[] | null {
   const file = armOf(icl, arm)?.files['icl_sum_lowm_results']
   if (!file) return null
-  const sum = file.rows.filter((r) => r.task === 'sum')
-  if (sum.length !== SUM_LOW_M.length) return null
-  return sum.map((r) => r.metrics['acc'] ?? Number.NaN)
+  const out = file.rows
+    .filter((r) => r.task === 'sum' && r.m !== null && r.metrics['acc'] !== undefined)
+    .sort((a, b) => (a.m ?? 0) - (b.m ?? 0))
+    .map((r) => r.metrics['acc'] ?? Number.NaN)
+  return out.length > 0 ? out : null
 }
 
 // ---------------------------------------------------------------------------
@@ -793,24 +747,9 @@ function ExtrasExplorer({ icl, meta }: { icl: IclData; meta: Meta }) {
         <p className="card__note">
           One more associative-recall cell is measured only as a sweep over how
           many <em>extra</em> dictionary prints follow the first: self-play goes{' '}
-          {(() => {
-            const rows = armOf(icl, 'selfplay')?.files['icl_assoc_dict_results']?.rows
-            const a = rows?.[0]?.metrics['acc']
-            const b = rows?.[rows.length - 1]?.metrics['acc']
-            return a !== undefined && b !== undefined
-              ? `${pct(a)} → ${pct(b)}` : '—'
-          })()}
-          against PCFG's{' '}
-          {(() => {
-            const rows = armOf(icl, 'pcfg')?.files['icl_assoc_dict_results']?.rows
-            const a = rows?.[0]?.metrics['acc']
-            const b = rows?.[rows.length - 1]?.metrics['acc']
-            return a !== undefined && b !== undefined
-              ? `${pct(a)} → ${pct(b)}` : '—'
-          })()}
-          , and the universal-prior arm is exactly 0.0% at every point. The
-          released bundle drops the sweep coordinate from those rows, so we
-          report the endpoints rather than draw a curve against a guessed axis.
+          {assocDictEnds(icl, 'selfplay')}
+          against PCFG's {assocDictEnds(icl, 'pcfg')}
+          , and the universal-prior arm is exactly 0.0% at every point.
         </p>
       )}
     </>

@@ -307,6 +307,10 @@ export interface IclRow {
   m: number | null
   /** Arity or dictionary size, depending on the task. */
   k: number | null
+  /** Associative-recall dictionary size, from the harness's `V=` axis. */
+  v: number | null
+  /** Extra dictionary prints after the first, from `extra=`. */
+  extra: number | null
   /** Metric name -> value. Names differ per harness version, so all are kept. */
   metrics: Record<string, number>
 }

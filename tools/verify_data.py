@@ -185,6 +185,41 @@ check("every section reference resolves",
           [t["ref"] for t in meta["rewardArms"]]
           + [t["ref"] for t in meta["iclTasks"].values()]))
 
+# The ICL flattener must resolve coordinates, not silently emit nulls: a row
+# with m=k=null cannot be plotted and reads as a chart with no data.
+icl = json.loads((DATA / "icl.json").read_text())
+for arm, entry in icl["arms"].items():
+    sweep = entry["files"].get("icl_results")
+    if not sweep:
+        continue
+    unresolved = [r for r in sweep["rows"] if r["m"] is None or r["k"] is None]
+    check(f"{arm}: icl_results has a resolved (m,k) on every row",
+          not unresolved,
+          f"{len(unresolved)} unresolved, e.g. {unresolved[:2]}")
+    ms = sweep["ms"] or []
+    ks = sweep["ks"] or []
+    check(f"{arm}: every swept m comes from the file's own ms list",
+          all(r["m"] in ms for r in sweep["rows"]),
+          f"ms={ms}")
+    check(f"{arm}: every swept k comes from the file's own ks list",
+          all(r["k"] in ks for r in sweep["rows"]),
+          f"ks={ks}")
+    # 1 + m*(k+2) + k + 1 must fit the 4096-byte context, or the harness never
+    # emitted that cell at all.
+    over = [r for r in sweep["rows"]
+            if 1 + r["m"] * (r["k"] + 2) + r["k"] + 1 > 4096]
+    check(f"{arm}: no icl_results cell exceeds the 4096-byte prompt context",
+          not over, f"{len(over)} over, e.g. {over[:2]}")
+    cells = {(r["task"], r["m"], r["k"]) for r in sweep["rows"]}
+    check(f"{arm}: icl_results has no duplicate (task,m,k) cell",
+          len(cells) == len(sweep["rows"]),
+          f"{len(sweep['rows'])} rows, {len(cells)} distinct cells")
+    assoc = [r for r in entry["files"].get("icl_v3_results", {}).get("rows", [])
+             if r["task"] == "assoc"]
+    check(f"{arm}: associative-recall rows carry their dictionary size",
+          bool(assoc) and all(r["v"] is not None for r in assoc),
+          f"{sum(1 for r in assoc if r['v'] is None)} of {len(assoc)} missing V")
+
 print(f"\n{'=' * 70}")
 print(f"{checks - len(failures)}/{checks} checks passed")
 if failures:
