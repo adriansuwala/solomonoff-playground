@@ -1,0 +1,52 @@
+{
+ "interpretation": {
+  "caveat": "These are OUR measurements at the smallest released rung (98,496 parameters), not the paper's headline scaling results. The authors' own numbers for this checkpoint are in the Scaling section.",
+  "claim": "Trained rounds score far below the random-init control, reproducing the paper's central claim on this machine.",
+  "control": "Round 0 is the random initialization and scores ABOVE the uniform-256 baseline of 8.0 bits/byte, which is the expected result for an untrained network and confirms the measurement is sound.",
+  "reference": "sec3.1"
+ },
+ "points": [
+  {
+   "bitsPerByte": 8.7225,
+   "isRandomInit": true,
+   "round": 0,
+   "top1Accuracy": 0.00206
+  },
+  {
+   "bitsPerByte": 6.1072,
+   "isRandomInit": false,
+   "round": 768,
+   "top1Accuracy": 0.09949
+  },
+  {
+   "bitsPerByte": 6.1672,
+   "isRandomInit": false,
+   "round": 2816,
+   "top1Accuracy": 0.08621
+  },
+  {
+   "bitsPerByte": 6.1464,
+   "isRandomInit": false,
+   "round": 8191,
+   "top1Accuracy": 0.09007
+  }
+ ],
+ "provenance": {
+  "contextLength": 4096,
+  "corpus": "DCLM (dclm_ranked), the authors' baked bytes",
+  "host": {
+   "cpu": "Intel(R) Xeon(R) Gold 5412U",
+   "gpu": "none",
+   "python": "3.12.13",
+   "torch": "2.14.1+cpu",
+   "torchThreads": 2
+  },
+  "nSequences": 32,
+  "params": 98496,
+  "rung": "100k",
+  "seed": 40354564,
+  "uniformBaseline": 8.0,
+  "weightsRepo": "https://huggingface.co/nourya-cohen/solomonoff-paper",
+  "what": "Our own CPU scoring of the authors' released checkpoint on real DCLM text bytes, zero-shot: this model never trained on natural data."
+ }
+}
