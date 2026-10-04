@@ -1,0 +1,109 @@
+# Continuous integration for the arXiv:2609.30063 explainer.
+#
+# WHY THE PINS BELOW ARE LOAD-BEARING -- read before "upgrading" either one.
+#
+# `public/data/*.json` is a COMMITTED build product (see .gitignore and
+# .gitattributes). The `data` job proves it is byte-reproducible by running
+# tools/build_data.py and failing on any diff. That proof only holds on a
+# specific numeric stack:
+#
+#   * The power-law fits in public/data/scaling.json come from the authors'
+#     vendored scipy.optimize curve_fit / minimize. Those optimizers stop at a
+#     tolerance, not at the exact optimum, so the last bits of `amplitude` and
+#     `exponent` depend on the LAPACK/BLAS build behind the scipy wheel.
+#   * MEASURED HERE: with numpy==2.4.6 pinned, scipy 1.15.3 / 1.16.3 / 1.17.0
+#     each reproduce the committed bundle byte-for-byte, while scipy 1.18.1
+#     changes 116 float leaves in scaling.json (worst delta ~1.4e27 on values
+#     around 1e21 -- i.e. relative error only, but fatal to a byte diff).
+#   * So numpy is pinned because the bundle was generated with it, and scipy is
+#     pinned to 1.17.0 because that is the newest release that still reproduces
+#     the bundle. Bumping scipy will turn this job red. That red is the point:
+#     regenerate the bundle with `npm run data:build` and commit it deliberately
+#     rather than discovering drift later.
+#
+# Node is pinned to 24 (LTS) for the same class of reason: the build must not
+# drift because a runner image moved.
+#
+# HONEST STATUS: this workflow has never been executed on a GitHub runner -- it
+# was authored in an environment with no git remote and no Actions runner. The
+# shell commands inside it were each executed by hand against committed HEAD
+# (including the byte-reproducibility check, on Linux x86_64 / CPython 3.13 /
+# numpy 2.4.6 / scipy 1.17.0), but the workflow itself is UNVERIFIED until one
+# manual run on GitHub.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Superseded PR runs are cancelled: a new push to the same ref makes every
+# in-flight run for that ref redundant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Typecheck, test, lint, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  data:
+    name: Verify data bundle and its reproducibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # Pinned exactly: no ranges, no constraints file. See the header comment --
+      # the reproducibility diff below is the check that these pins are right.
+      - name: Install numeric stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.4.6" "scipy==1.17.0"
+
+      - name: Show resolved numeric stack
+        run: python -c "import numpy, scipy, sys; print(sys.version); print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
+
+      - name: Verify committed bundle (165 assertions)
+        run: python tools/verify_data.py
+
+      # The committed bundle must be byte-reproducible from the committed
+      # builder. A stale bundle, a drift-prone scipy, or a hand-edited JSON file
+      # all fail here.
+      - name: Rebuild bundle and fail on any diff
+        run: |
+          python tools/build_data.py
+          git diff --exit-code -- public/data
