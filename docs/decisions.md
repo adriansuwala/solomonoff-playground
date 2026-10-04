@@ -156,15 +156,90 @@ precision in a published artefact. Rounding the stored values instead. That
 reduces the noise but does not make the value *right* — the number would still
 be 5e-5 off the optimum.
 
+**Superseded in part by D8.** The claim that 1e-14 and 1e-15 "agree to 3e-12" does
+not hold. Measured on the real corpora they agree to ~1e-10, and the amplitude
+still moves ~1e-5 between 1e-12 and 1e-14. Converging further was necessary but
+not sufficient; D8 has the rest. The reasoning above still stands for what it
+was measuring — how far the *default* tolerance sat from the optimum.
+
+## D8 — Give the fit scalars their own tolerance; keep the rest at 1e-6
+
+**Decision.** `tools/diff_bundle.py` compares numeric leaves at one of two
+tolerances, chosen by path: 1e-6 for everything, 1e-3 for leaves that are direct
+members of a `fit` object (`alpha`, `amplitude`, `floor`, `rmse`, `nPoints`).
+Keys, array lengths and strings are still compared exactly, as before.
+
+**Why.** D7 assumed that once the fit converged, the remaining cross-CPU
+disagreement would shrink with it. It does not. A real runner still reported the
+fit fields moving by up to 1.8e-5 after the tolerance was tightened, and the
+amplitude is worse than that under a genuine change of arithmetic path —
+measured at 5.2e-4 when the inputs are perturbed by 1e-13.
+
+The cause is conditioning, not convergence. The stored amplitude is `A` at
+compute = 1, extrapolated roughly 31 orders of magnitude below the smallest
+compute anyone measured:
+
+    amplitude = A_ref * compute_scale**alpha        (compute_scale = 1e15)
+    d(amplitude)/amplitude  ~=  alpha * ln(1e15) * d(alpha)/alpha
+
+With `alpha` around 2, the exponent multiplies the exponent's own ~1e-7 residual
+by about 34. Tightening the optimiser cannot help, because the exponent has
+already settled — on `aitdcc_d_glibc_rand`, 1e-14 and 1e-15 give the same alpha
+to 1e-10 while the amplitude they imply still differ in the 5th digit.
+
+The distinction that matters: the *fitted loss at the largest observed compute*
+is stable to ~1e-11, because that is a well-conditioned prediction. It is only
+the extrapolated prefactor that is noise. The page's charts draw the former.
+
+**Why the loose tolerance is scoped by path, not applied globally.** A blanket
+1e-4 would have been one line instead of twenty, and it would have loosened the
+check for every measured loss, compute count and byte-per-token in the bundle.
+The fit scalars are 520 leaves out of 784,920 numeric leaves — 0.1%. The other
+99.9% keep 1e-6, which is still far below any real regression.
+
+**Why this cannot silently rot.** A tolerance wide enough to accept anything is
+indistinguishable from no check, so `tools/test_diff_bundle.py` runs in the same
+CI job and feeds the gate deliberately corrupted bundles, requiring it to reject
+each one. It asserts eight rejections — a fit amplitude off by 1%, an alpha off
+by 5%, a floor off by 2%, a measured frontier loss off by 1e-3, a *transcribed*
+`exponents[].alpha` off by 1e-3 (same field name, different provenance, so this
+one proves the scoping is by path), a renamed corpus, a dropped frontier point, a
+changed label — and three acceptances, including the two noise magnitudes this
+decision exists to permit. If someone later widens the tolerance enough to stop
+catching a real defect, that job fails.
+
+The exact leaves from the failing CI run were replayed through the new gate as a
+check on the margin: worst delta 1.758e-05 against a 1e-3 tolerance, 57× of
+headroom.
+
+**Rejected.** Rounding the stored amplitude to 9 significant figures, which is
+the obvious cheaper fix. Tried, measured, and reverted: the drift is 1e-5 and
+above, so rounding the 9th digit cannot reconcile it — a perturbation test put
+the worst case at 5.2e-4, far outside the gate. It would have turned a loud
+failure into a quiet wrong number. **Rejected:** reparameterising the amplitude
+at a reference compute inside the measured range. This is the correct fix and it
+works — the prediction is well-conditioned — but it changes the meaning of a
+number the Scaling page displays as "A — loss-scale prefactor", which is a call
+about what the artefact claims to be, not a build fix. **Rejected:** shipping
+1e-4 globally. See above.
+
+**Known limit.** The scoping is a path rule, so a corpus literally named `fit`
+would be loosened too. No corpus has that name (all 104 fit keys sit under
+`arms.*.corpora.*`), and the self-test documents this rather than asserting a
+distinction the matcher cannot make.
+
+---
+
+Earlier text in D7, kept because the numbers are the evidence for it:
+
 **Cost.** The vendored file is no longer byte-identical to the authors'. The
 addition is additive, keyword-only and defaults to upstream behaviour; the
 docstring says so in place.
 
-**Consequence.** `scaling.json` is regenerated: 166 leaves move (111 amplitude,
-37 floor, 18 alpha), the largest by 3.8e-3 relative. `alpha` and `floor` are
-stored rounded to 5 decimals, so 52 displayed values shift in the 5th decimal.
-Nothing in the repo hardcodes them — pages read from the bundle — and
-`verify_data.py` still passes 165/165. CI's reproducibility gate
-(`tools/diff_bundle.py`) stays in place as a net, at `rtol=1e-6`: now roughly
-four orders of magnitude above the residual CPU noise, and still tight enough to
-catch the ~1.4e-6 drift a scipy bump introduces.
+**Consequence.** `scaling.json` was regenerated: 166 leaves moved (111
+amplitude, 37 floor, 18 alpha), the largest by 3.8e-3 relative. `alpha` and
+`floor` are stored rounded to 5 decimals, so 52 displayed values shifted in the
+5th decimal. Nothing in the repo hardcodes them — pages read from the bundle —
+and `verify_data.py` still passes 165/165. The claim that CI's gate then sat
+"four orders of magnitude above the residual CPU noise" was the optimistic one:
+D8 is the measurement that disproved it.
