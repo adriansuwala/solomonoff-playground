@@ -193,6 +193,30 @@ button {
 button:hover { border-color: var(--accent); }
 button[aria-pressed='true'] { background: rgba(42,157,143,0.16); border-color: var(--arm-selfplay); }
 
+/*
+ * A quiet marker for "this program is the one being taught right now".
+ *
+ * Deliberately NOT teal and NOT a fill: `button[aria-pressed='true']` already
+ * owns the teal treatment, and when the taught marker used the same colour a
+ * reader could not tell "selected" from "being taught" -- and under a fixed
+ * curriculum the taught program never changes, so it looked permanently
+ * selected and could never be deselected in the eye.
+ */
+.btn__badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 13px;
+  vertical-align: 1px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+}
+
 /* --------------------------------------------------------------- legend */
 
 .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-muted); }

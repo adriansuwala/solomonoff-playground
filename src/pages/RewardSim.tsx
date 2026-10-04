@@ -370,7 +370,11 @@ function TermBreakdown({
 
   if (!viewed) return <div className="loading">Scoring the pool…</div>
 
-  const shown = hover ?? 0
+  // Hover previews; the pinned selection wins once the pointer is away. This
+  // read `hover ?? 0` for a while, which pinned every readout to arithmetic
+  // while the buttons correctly tracked the selection -- so the numbers never
+  // moved even though the highlight did.
+  const shown = hover ?? programIdx
   const d = viewed.programs[shown]
 
   return (
@@ -405,11 +409,26 @@ function TermBreakdown({
             onFocus={() => setHover(i)}
             onBlur={() => setHover(null)}
             onClick={() => onSelectProgram(i)}
-            style={isActive ? { borderColor: TEAL, color: TEAL } : undefined}
-            title={isNoise ? 'the control' : isActive ? 'being taught this round' : p.label}
+            // No colour override. `button[aria-pressed='true']` in the
+            // stylesheet already paints the selection teal, and styling the
+            // taught program the same way made arithmetic permanently
+            // indistinguishable from selected -- under a fixed curriculum it is
+            // always the taught one, so it could never look unselected. The
+            // taught marker is a separate, quieter signal.
+            title={
+              isNoise
+                ? 'the control'
+                : isActive
+                  ? `${p.label} — being taught at this round`
+                  : p.label
+            }
           >
             {p.label}
-            {isActive && ' •'}
+            {isActive && (
+              <span className="btn__badge" title="being taught at this round">
+                taught
+              </span>
+            )}
           </button>
         )
         })}
@@ -418,6 +437,16 @@ function TermBreakdown({
       {d === undefined ? null : (
         <>
         <div className="kv">
+          <span className="kv__k">reading</span>
+          <span className="kv__v">
+            <strong style={{ color: TEAL }}>{res.pool[shown]?.label ?? '—'}</strong>
+            {hover !== null && hover !== programIdx && (
+              <span style={{ color: 'var(--text-faint)' }}> — hover preview</span>
+            )}
+            {viewed.activeIndex === shown && (
+              <span style={{ color: 'var(--text-faint)' }}> — the one being taught</span>
+            )}
+          </span>
           <span className="kv__k">gradient magnitude</span>
           <span className="kv__v">
             <code>|∇L|</code> = {d.gradNorm.toExponential(3)}
