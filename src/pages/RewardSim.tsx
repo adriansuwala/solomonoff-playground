@@ -28,7 +28,7 @@
  * runSim via useMemo, and the gradient those numbers rest on is pinned against
  * finite differences in gradcheck.test.ts.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, Claim, Disclosure, Legend, PaperRef, Stat } from '@/components/UI'
 import { ChartFrame, Series } from '@/components/Chart'
 import { Math as MathBlock } from '@/components/Math'
@@ -156,11 +156,35 @@ function ScopeNote() {
 function Interactive() {
   const [curriculum, setCurriculum] = useState<Curriculum>('fixed')
   const [mode, setMode] = useState<RewardMode>('abs')
-  const [selected, setSelected] = useState<number | null>(null)
+  // WHICH PROGRAM the panels read against, and WHICH ROUND they read at.
+  //
+  // These were one state variable, which was a bug: selecting a program also
+  // moved the round, because a program index was being used to index the rounds
+  // array. Clicking "Fibonacci" jumped the exhibit to round 16. They are
+  // independent axes and a reader needs both.
+  const [programIdx, setProgramIdx] = useState(0)
+  // null means "the peak", which is where the page opens.
+  const [roundIdx, setRoundIdx] = useState<number | null>(null)
 
   // Off the main thread: a 200-round run is ~2.8 s of arithmetic, and running
   // both arms inline froze the tab for ~5.5 s. See useSim for the full contract.
   const runs = useSimRuns({ rounds: ROUNDS, recordEvery: RECORD_EVERY, span: CURRICULUM_SPAN })
+
+  // Reset the two axes when the curriculum arm changes: the other arm's round
+  // grid may not line up, and the pinned program may not exist in it.
+  //
+  // This sits ABOVE the early returns on purpose. A hook placed after a
+  // conditional return runs on some renders and not others, and React rejects
+  // that with "rendered more hooks than during the previous render". The first
+  // render here returns early because the worker is still running and the
+  // second does not, so the count changes exactly once -- and with no error
+  // boundary on this page the result is a blank document with nothing logged.
+  // App.tsx carries the same warning about a callback passed to Async; this is
+  // the same trap reached from a different direction.
+  useEffect(() => {
+    setRoundIdx(null)
+    setProgramIdx(0)
+  }, [curriculum])
 
   if (runs.error !== null) {
     return (
@@ -185,8 +209,14 @@ function Interactive() {
     )
   }
   const noise = noiseIndex(res.pool)
+  // The peak moves with the sign convention, so "show me the peak" has to be
+  // re-resolved whenever `mode` changes rather than cached from first render.
   const peak = peakRound(res.rounds, 0, mode)
-  const viewed: RoundRecord | undefined = selected === null ? peak : res.rounds[selected]
+
+  // An out-of-range roundIdx (the other arm has a different round count) falls
+  // back to the peak instead of rendering nothing.
+  const viewed: RoundRecord | undefined =
+    roundIdx === null || res.rounds[roundIdx] === undefined ? peak : res.rounds[roundIdx]
 
   const outbidAbs = noiseOutbidsFrontier(res.rounds, 0, noise, 'abs')
   const outbidSigned = noiseOutbidsFrontier(res.rounds, 0, noise, 'signed')
@@ -234,7 +264,23 @@ function Interactive() {
         </div>
       )}
 
-      <TermBreakdown res={res} viewed={viewed} mode={mode} noise={noise} onSelect={setSelected} />
+      <TermBreakdown
+        res={res}
+        viewed={viewed}
+        mode={mode}
+        noise={noise}
+        programIdx={programIdx}
+        onSelectProgram={setProgramIdx}
+        roundIdx={roundIdx === null || res.rounds[roundIdx] === undefined ? null : roundIdx}
+      />
+
+      <RoundScrubber
+        res={res}
+        viewed={viewed}
+        peak={peak}
+        roundIdx={roundIdx}
+        onSelectRound={setRoundIdx}
+      />
 
       <div className="kv" style={{ marginTop: 16 }}>
         <Stat
@@ -264,7 +310,13 @@ function Interactive() {
         <PaperRef reference="appF" inline />
       </Claim>
 
-      <Trajectory res={res} mode={mode} noise={noise} />
+      <Trajectory
+        res={res}
+        mode={mode}
+        noise={noise}
+        viewed={viewed}
+        onSelectRound={setRoundIdx}
+      />
 
       <Disclosure summary="What each program in the pool is">
         <div className="kv">
@@ -294,17 +346,25 @@ function Fragment({ children }: { children: React.ReactNode }) {
 /**
  * The three terms, side by side, at one round.
  *
- * This is the panel that answers "which piece pays for what". Selecting a
- * program re-reads every panel against that program.
+ * This is the panel that answers "which piece pays for what".
+ *
+ * It takes TWO independent axes: which program the readouts are about, and
+ * which round. They were one state variable at first, which meant selecting a
+ * program also moved the round -- clicking "Fibonacci" jumped the exhibit to
+ * round 16, because a program index was indexing the rounds array. Hover
+ * previews a program and click pins it; neither touches the round, which the
+ * RoundScrubber owns.
  */
 function TermBreakdown({
-  res, viewed, mode, noise, onSelect,
+  res, viewed, mode, noise, programIdx, onSelectProgram, roundIdx,
 }: {
   res: SimResult
   viewed: RoundRecord | undefined
   mode: RewardMode
   noise: number
-  onSelect: (i: number) => void
+  programIdx: number
+  onSelectProgram: (i: number) => void
+  roundIdx: number | null
 }) {
   const [hover, setHover] = useState<number | null>(null)
 
@@ -318,12 +378,17 @@ function TermBreakdown({
       title={
         <>
         Round {viewed.e} — the reward taken apart
-        {mode === 'signed' && (
+          {roundIdx === null && (
+            <span style={{ color: 'var(--text-faint)', marginLeft: 8, fontSize: 12 }}>
+              (peak)
+            </span>
+          )}
+          {mode === 'signed' && (
           <span style={{ color: WARN, marginLeft: 8, fontSize: 12 }}>signed reading</span>
         )}
         </>
       }
-      note="Click a program to read every panel against it. cos is the only term that separates a frontier program from noise; the magnitude is high for both."
+      note="Pick a program to read every panel against it, then scrub the round below to move through the run. cos is the only term that separates a frontier program from noise; the magnitude is high for both."
     >
       <div className="controls" style={{ marginBottom: 12 }}>
         {res.pool.map((p, i) => {
@@ -334,12 +399,12 @@ function TermBreakdown({
         return (
           <button
             key={p.key}
-            aria-pressed={shown === i}
+            aria-pressed={programIdx === i}
             onMouseEnter={() => setHover(i)}
             onMouseLeave={() => setHover(null)}
             onFocus={() => setHover(i)}
             onBlur={() => setHover(null)}
-            onClick={() => onSelect(i)}
+            onClick={() => onSelectProgram(i)}
             style={isActive ? { borderColor: TEAL, color: TEAL } : undefined}
             title={isNoise ? 'the control' : isActive ? 'being taught this round' : p.label}
           >
@@ -384,6 +449,115 @@ function TermBreakdown({
 
         <TermBars viewed={viewed} pool={res.pool} noise={noise} />
         </>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * The round axis.
+ *
+ * This control did not exist at all in the first version, which is a real gap:
+ * the page opened on the peak round and the only way to reach any other round
+ * was to click a program button -- and those were wired to the rounds array, so
+ * picking a program silently moved the round. Selecting a round and selecting a
+ * program are independent choices and each needs its own control.
+ *
+ * The slider steps over RECORDED rounds, not training rounds, so one step is
+ * always one scored pool rather than a variable jump.
+ */
+function RoundScrubber({
+  res, viewed, peak, roundIdx, onSelectRound,
+}: {
+  res: SimResult
+  viewed: RoundRecord | undefined
+  peak: RoundRecord | undefined
+  roundIdx: number | null
+  onSelectRound: (i: number | null) => void
+}) {
+  const n = res.rounds.length
+  if (n === 0 || viewed === undefined) return null
+  const current = roundIdx === null ? res.rounds.indexOf(viewed) : roundIdx
+  const safe = current >= 0 ? current : 0
+  const noise = noiseIndex(res.pool)
+  const d = viewed.programs[viewed.activeIndex]
+  const z = viewed.programs[noise]
+
+  return (
+    <Card
+      title="Move through the run"
+      note="One step is one scored pool. The peak is the round where the reward most clearly prefers what the learner is being taught."
+    >
+      <div className="controls" style={{ alignItems: 'center', gap: 12 }}>
+        <button
+          onClick={() => onSelectRound(Math.max(0, safe - 1))}
+          disabled={safe === 0}
+          aria-label="previous round"
+        >
+          &larr;
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={n - 1}
+          step={1}
+          value={safe}
+          onChange={(e) => onSelectRound(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 200, accentColor: 'var(--arm-selfplay)' }}
+          aria-label="round"
+        />
+        <button
+          onClick={() => onSelectRound(Math.min(n - 1, safe + 1))}
+          disabled={safe === n - 1}
+          aria-label="next round"
+        >
+          &rarr;
+        </button>
+        <button onClick={() => onSelectRound(null)} aria-pressed={roundIdx === null}>
+          jump to peak
+        </button>
+      </div>
+      <div className="kv" style={{ marginTop: 12 }}>
+        <span className="kv__k">round</span>
+        <span className="kv__v">
+          {viewed.e} of {res.rounds[res.rounds.length - 1]?.e ?? ROUNDS}
+          {roundIdx === null && ' — showing the peak'}
+        </span>
+        <span className="kv__k">being taught</span>
+        <span className="kv__v">{res.pool[viewed.activeIndex]?.label ?? '—'}</span>
+        <span className="kv__k">learner loss</span>
+        <span className="kv__v">{viewed.trainLossBpb.toFixed(3)} bits/byte</span>
+        {d !== undefined && (
+          <>
+            <span className="kv__k">taught program&rsquo;s cos</span>
+            <span className="kv__v">
+              <strong style={{ color: d.cos > 0.3 ? TEAL : d.cos < 0 ? WARN : MUTED }}>
+                {d.cos.toFixed(4)}
+              </strong>
+            </span>
+          </>
+        )}
+        {z !== undefined && (
+          <>
+            <span className="kv__k">noise cos</span>
+            <span className="kv__v">
+              <strong style={{ color: z.cos < 0 ? WARN : 'var(--text)' }}>{z.cos.toFixed(4)}</strong>
+            </span>
+            <span className="kv__k">noise ÷ taught</span>
+            <span className="kv__v">
+              {(rewardOf(z, 'abs') / (d === undefined || rewardOf(d, 'abs') === 0 ? 1e-30 : rewardOf(d, 'abs'))).toFixed(2)}
+              &times;
+            </span>
+          </>
+        )}
+      </div>
+      {peak !== undefined && roundIdx !== null && (
+        <p className="card__note">
+          The peak is round {peak.e}.{' '}
+          {peak.e === viewed.e
+            ? 'You are there.'
+            : `You are ${Math.abs(peak.e - viewed.e)} round${Math.abs(peak.e - viewed.e) === 1 ? '' : 's'} ${peak.e > viewed.e ? 'before' : 'after'} it.`}
+        </p>
       )}
     </Card>
   )
@@ -531,13 +705,15 @@ function TermBars({
   )
 }
 
-/** Reward and loss over the whole run. */
+/** Reward and loss over the whole run. Rows are clickable round selectors. */
 function Trajectory({
-  res, mode, noise,
+  res, mode, noise, viewed, onSelectRound,
 }: {
   res: SimResult
   mode: RewardMode
   noise: number
+  viewed: RoundRecord | undefined
+  onSelectRound: (i: number | null) => void
 }) {
   const activeSeries = series(res.rounds, (r) => {
     const d = r.programs[r.activeIndex]
@@ -599,15 +775,26 @@ function Trajectory({
           </tr>
         </thead>
         <tbody>
-          {res.rounds.filter((_, i) => i % 2 === 0).map((r) => {
+          {res.rounds.map((r, ri) => {
             const a = r.programs[r.activeIndex]
             const n = r.programs[noise]
             if (a === undefined || n === undefined) return null
             const ra = rewardOf(a, mode)
             const rn = rewardOf(n, mode)
             const noiseWins = rn > ra
+            const isCurrent = viewed !== undefined && viewed.e === r.e
             return (
-              <tr key={r.e}>
+              <tr
+                key={r.e}
+                onClick={() => onSelectRound(ri)}
+                title={`Load round ${r.e} into the breakdown above`}
+                style={{
+                  cursor: 'pointer',
+                  background: isCurrent
+                    ? 'rgba(120, 200, 190, 0.09)'
+                    : undefined,
+                }}
+              >
                 <td>{r.e}</td>
                 <td className="left">{res.pool[r.activeIndex]?.label ?? '—'}</td>
                 <td className="num">{r.trainLossBpb.toFixed(3)}</td>
@@ -623,7 +810,8 @@ function Trajectory({
         </table>
       </div>
       <p className="card__note">
-        Ratio is noise ÷ taught. Above 1.00 the control is being paid more than
+        Click a row to load that round into the breakdown above. Ratio is noise
+        ÷ taught. Above 1.00 the control is being paid more than
         the thing the learner is actually trying to learn. Note the reward scale
         itself climbs over the run — the{' '}
         <code>|P ⊙ δ&theta;|</code> window spans more rounds as{' '}
