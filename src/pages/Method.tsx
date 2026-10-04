@@ -34,6 +34,12 @@ const WINDOW = 32
 export interface BfRun {
   /** Exactly `T` bytes: the emitted prefix, zero-padded. */
   out: number[]
+  /**
+   * Bytes the program actually emitted, before zero-padding. `out.length` is
+   * always T, so it cannot answer "how much did this program produce"; this
+   * can. Equals `out.length` for a program that fills the window.
+   */
+  emitted: number
   tape: number[]
   head: number
   steps: number
@@ -119,6 +125,7 @@ export function runBrainfuck(
 
   return {
     out: padded,
+    emitted: Math.min(out.length, t),
     tape,
     head,
     steps,
@@ -151,15 +158,15 @@ interface Preset {
  */
 const PRESETS: Preset[] = [
   {
-    label: 'Paper’s §2.1 example',
+    label: 'Our worked example',
     program: '+++[>+.<-]',
     seed: 1,
     paperTerms: '1, 2, 3, 0, 0, 0, …',
     reference: 'sec2.1',
     note:
-      'Nine characters. The head sweeps right three times, and the cell it left '
-      + 'behind is what gets emitted, so the output counts back down to zero and '
-      + 'the program halts in 22 steps.',
+      'Ten characters. The head sweeps right three times, and the cell it left '
+      + 'behind is what gets emitted, so the emitted bytes count up to three '
+      + 'and the program halts in 22 steps.',
   },
   {
     label: 'Arithmetic, mod 256',
@@ -190,7 +197,7 @@ const PRESETS: Preset[] = [
     paperTerms: '1, 1, 2, 3, 5, 8, …',
     reference: 'table1',
     note:
-      'Two accumulator cells, kept one apart by the C macro. The first byte '
+      'Two accumulator cells, written together by the C macro. The first byte '
       + 'drawn is whatever `,` returns, so the whole sequence scales with it.',
   },
   {
@@ -293,7 +300,7 @@ function MethodBody({ meta }: { meta: Meta }) {
 
       <Card
         title={`The ${primitives.length} primitives`}
-        note={`Cells are taken mod ${params.cell_modulus}. The full alphabet the generator samples over is ${params.program_alphabet} — the eight primitives plus the ${macros.length} macro tokens below.`}
+        note={`Cells are taken mod ${params.cell_modulus}. The primitive alphabet is ${params.program_alphabet} — the eight primitives plus F, which terminates a row. The ${macros.length} macro tokens below expand into those same primitives, so a program written with macros uses 19 distinct characters in total, which is exactly what the ${params.program_alphabet.length + macros.length} distinct characters across all released programs amount to.`}
       >
         <div className="table-wrap">
           <table className="data">
@@ -406,8 +413,9 @@ function MethodBody({ meta }: { meta: Meta }) {
 
       <h2 className="section">The objectives</h2>
       <p className="body">
-        Four terms, in the order they act. Rendered as text rather than typeset;
-        the notation is ours, the structure is theirs.
+        Five terms, in the order they act. Rendered as text rather than typeset;
+        the notation is ours, and equations 3 to 5 are reconstructions rather
+        than transcriptions.
       </p>
 
       <Card
@@ -556,8 +564,9 @@ function MethodBody({ meta }: { meta: Meta }) {
           learner has actually absorbed — is on the Curriculum page. The scaling
           exponents the compute formula above feeds are on the Scaling page. And
           the twenty thousand real discovered programs are on the Discovered Math
-          page; the presets above are the paper’s illustrative examples, not
-          samples the generator actually emitted.
+          page. The presets above are ours — worked examples chosen to exercise
+          the interpreter, not samples the generator emitted; the ones the
+          generator actually produced are on that page.
         </p>
       </Disclosure>
     </>
@@ -685,7 +694,7 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
       </div>
 
       <div className="grid-3" style={{ marginTop: 16 }}>
-        <Stat value={run.out.length} label="bytes emitted (zero-padded to T)" />
+        <Stat value={run.emitted} label={`bytes emitted of ${run.out.length} shown`} />
         <Stat value={run.steps.toLocaleString()} label="instructions executed" />
         <Stat
           value={run.head}
@@ -697,10 +706,11 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
         <div className="claim claim--caveat" style={{ marginTop: 16 }}>
           <p className="claim__text">
             <strong>Step limit reached.</strong> This program had not emitted T
-            bytes after {MAX_STEPS.toLocaleString()} instructions, so it is
-            looping without producing output. The paper’s own data would score
-            this sequence at the uniform-256 baseline of 8.0 bits/byte: nothing
-            to learn.
+            bytes after {MAX_STEPS.toLocaleString()} instructions. What you see is
+            therefore <em>truncated</em>, not a failed program: the sequence may
+            well have kept going. Lower T below {MAX_STEPS.toLocaleString()} (or
+            raise the step limit) to see the whole thing — the truncation is this
+            page&rsquo;s doing, not a property of the program.
           </p>
         </div>
       )}
@@ -708,8 +718,10 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
         <div className="claim claim--caveat" style={{ marginTop: 16 }}>
           <p className="claim__text">
             <strong>{run.unmatched} unmatched bracket{run.unmatched === 1 ? '' : 's'}.</strong>{' '}
-            Treated as a no-op, which is what the paper specifies — a random
-            program is nearly always still executable.
+            Treated as a no-op here — the reading the paper&rsquo;s own Table 1
+            programs require, since its Fibonacci example has one unmatched
+            bracket and only the no-op reading makes it emit 1, 1, 2, 3, 5, 8. A
+            random program is nearly always still executable.
           </p>
         </div>
       )}

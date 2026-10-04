@@ -232,8 +232,23 @@ export interface Table5 {
   K: number
   columns: Table5Column[]
   rows: Table5Row[]
-  provenance: Record<string, unknown> | null
+  provenance: Table5Provenance | null
   notes: string[]
+}
+
+/**
+ * How table5.json was derived. `corpora[k].n_seq_used` is how many held-out
+ * sequences each dataset actually contributed, which is not always the 256 the
+ * paper's caption quotes -- mutopia_melody_16th contributes 17.
+ */
+export interface Table5Provenance {
+  built_at?: string
+  rung?: string
+  round?: number
+  K?: number
+  bootstrap_draws?: number
+  corpora?: Record<string, { file?: string; n_seq_used?: number; sha256?: string }>
+  [key: string]: unknown
 }
 
 // ---------------------------------------------------------------------------

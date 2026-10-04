@@ -38,10 +38,10 @@ export function Reward() {
       <h1 className="page__title">The reward, and the evidence for it</h1>
       <p className="page__lede">
         Every other experiment in the paper is a measurement of a checkpoint the
-        authors released. This is the one that cannot be reconstructed from
-        released data: it compares <em>training runs</em>, and what we get to
-        inspect is the learner each run left behind. That is a weaker instrument
-        than the runs themselves — it shows where a run ended, not how it got
+        authors released. What cannot be reconstructed is the <em>training runs</em>:
+        the released bundle carries each run&rsquo;s per-round frontier, so the
+        endpoints are derivable, but not the runs themselves. That is a weaker
+        instrument than the runs — it shows where a run ended, not how it got
         there — but it is the only causal evidence in the paper for the design
         choice the whole method rests on.
       </p>
@@ -326,11 +326,22 @@ function heatAlpha(ratio: number, maxRatio: number): number {
   return Math.min(1, Math.max(0, t)) * 0.72
 }
 
+/**
+ * The best loss in a row, compared at the precision the authors' table is
+ * printed to. reward_arms.tex rounds every cell to 2 dp and shares the bold
+ * between arms that agree there, and build_data.py computes bestIndex the same
+ * way. Comparing at full precision made this function disagree with bestIndex
+ * on the random-bytes row, where uniform (8.0163) beats none (8.0204) by 0.004
+ * -- both print as 8.02 and are bold together in the paper. The heatmap and the
+ * table would then shade different cells as best on the same row.
+ */
 function rowBest(row: Table5Row): number | null {
   let best: number | null = null
   for (const c of row.cells) {
     if (!c) continue
-    if (best === null || c.bpb < best) best = c.bpb
+    if (best === null || Math.round(c.bpb * 100) < Math.round(best * 100)) {
+      best = c.bpb
+    }
   }
   return best
 }
@@ -726,8 +737,10 @@ function Verdict({ t }: { t: Table5 }) {
         paper prints <code>signed</code> in bold as the row&apos;s best. The
         margin is thin — on melody (Mutopia) it is{' '}
         {valuesOn(t, 'signed', ['melody (Mutopia)'])} against{' '}
-        {valuesOn(t, 'none', ['melody (Mutopia)'])}, under 0.01 bits/byte, which
-        an ensemble at this rung does not resolve cleanly. The honest reading:
+        {valuesOn(t, 'none', ['melody (Mutopia)'])}, under 0.01 bits/byte — and
+        that row rests on just {t.provenance?.corpora?.mutopia_melody_16th?.n_seq_used ?? 17}{' '}
+        held-out sequences rather than the 256 the caption implies, which is
+        exactly why the ensemble at this rung does not resolve it cleanly. The honest reading:
         the abs buys consistency across datasets rather than a large win, and the
         paper&apos;s argument for why it is <em>needed</em> (no negative rewards)
         is not separately measured anywhere in this table.

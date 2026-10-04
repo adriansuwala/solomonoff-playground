@@ -24,7 +24,12 @@ import type {
 const ARM_ORDER: readonly ArmKey[] = ['selfplay', 'uniform', 'pcfg']
 
 /** Never draw more raw circles than this; stride-subsample beyond it. */
-const MAX_RAW_POINTS = 1500
+/**
+ * Every ladder corpus carries 1,490 rows, so a 1,500 cap would never fire and
+ * the stride path in subsample would be unreachable. 1,400 keeps the scatter
+ * readable AND leaves the stride branch live.
+ */
+const MAX_RAW_POINTS = 1400
 
 /** Below this bits/byte gap the arms are not meaningfully separated. */
 const TIE_MARGIN = 0.05
@@ -827,13 +832,24 @@ function ArmVerdicts({ scaling, meta }: { scaling: Scaling; meta: Meta }) {
           </Card>
         ))}
       </div>
+      <p className="card__note">
+        This count covers the {verdicts.length} corpora above and omits six
+        binary and synthetic sets, which the bundle marks{' '}
+        <code>excluded</code>: arithmetic, protein, KoLMogorov DNA, glibc rand,
+        ATLAS float32 and astronomy. Six of the twenty-six ladder corpora are
+        therefore not in this comparison. One of them matters: on glibc rand the
+        fixed prior edges ahead of self-play (8.016 against 8.006 bits/byte),
+        though by less than the {TIE_MARGIN} tie margin, so &ldquo;the prior never
+        wins&rdquo; would not survive including it either way.
+      </p>
       <p className="body" style={{ marginTop: 12 }}>
         Counted over all {verdicts.length} corpora scored by all three arms:
         self-play has the lowest loss on {totals.selfplay}, PCFG on{' '}
         {totals.pcfg}, and the fixed universal prior on {totals.uniform}. The
         honest reading is breadth, not dominance — PCFG is the better-matched
-        inductive bias where a grammar was hand-designed for the modality, and
-        the fixed prior never wins, which is the load-bearing control: same
+        inductive bias where a grammar was hand-designed for the modality. Over
+        these {verdicts.length} the fixed prior never wins, which is the
+        load-bearing control: same
         program space, no curriculum, materially slower scaling.{' '}
         <PaperRef reference="sec3.1" also={['fig2', 'fig7']} inline />
       </p>
