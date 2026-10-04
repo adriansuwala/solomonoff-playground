@@ -15,6 +15,7 @@ import { Overview } from '@/pages/Overview'
 import { Method } from '@/pages/Method'
 import { Scaling } from '@/pages/Scaling'
 import { Reward } from '@/pages/Reward'
+import { RewardSim } from '@/pages/RewardSim'
 import { Curriculum } from '@/pages/Curriculum'
 import { DiscoveredMath } from '@/pages/DiscoveredMath'
 import { InContextLearning } from '@/pages/InContextLearning'
@@ -37,6 +38,8 @@ export const NAV: NavEntry[] = [
     render: () => <Scaling /> },
   { id: 'reward', label: 'Reward ablations', group: 'The evidence', ref: 'appF',
     render: () => <Reward /> },
+  { id: 'reward-sim', label: 'Inside the reward', group: 'The evidence', ref: 'eq2',
+    render: () => <RewardSim /> },
   { id: 'curriculum', label: 'Curriculum value', group: 'The evidence', ref: 'fig3',
     render: () => <Curriculum /> },
   { id: 'math', label: 'Discovered structure', group: 'The evidence', ref: 'appC',

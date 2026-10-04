@@ -46,6 +46,9 @@ describe('site mathematics', () => {
   })
 
   it('has a registry count matching what the pages declare', () => {
-    expect(SITE_MATH.length).toBe(25)
+    // 25 -> 32 when the reward simulator page landed: the factored reward, its
+    // three underbraced terms, delta-theta_e restated, and g_0 / g_phi on the
+    // limits table.
+    expect(SITE_MATH.length).toBe(32)
   })
 })
