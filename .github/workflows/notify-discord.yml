@@ -1,0 +1,126 @@
+# Post CI results to Discord.
+#
+# WHY THIS IS workflow_run AND NOT A GITHUB WEBHOOK
+# A repository webhook needs a publicly reachable HTTPS endpoint, and this stack
+# has none -- deploykey-proxy publishes no ports and is internal-only. So
+# instead of GitHub pushing to us, the runner pushes to Discord: `workflow_run`
+# fires in the base repository's context, where repository secrets ARE
+# available, which a `pull_request` trigger from a fork would not have.
+#
+# That also gives better content than a raw webhook payload: with
+# actions/github-script we can read the run's jobs and name the exact step that
+# failed, so a red build says "Lint" rather than making someone open the log.
+#
+# SETUP (one manual step, cannot be automated from here):
+#   1. Discord: Server Settings -> Integrations -> Webhooks -> New Webhook,
+#      copy the URL.
+#   2. GitHub: repo -> Settings -> Secrets and variables -> Actions ->
+#      New repository secret, name DISCORD_WEBHOOK_URL, paste the URL.
+#   Secrets cannot be set from this checkout: there is no GitHub token here
+#   (the deploy key grants git over ssh only) and the proxy deliberately routes
+#   /hooks/* and /actions/secrets to 404. Until the secret exists this workflow
+#   no-ops, by design.
+#
+# The webhook URL is a credential. Do not paste it into a chat, a commit, or a
+# file in this repo.
+
+name: Notify Discord
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+# One notification per commit: if a newer push supersedes this one, drop it.
+concurrency:
+  group: notify-discord-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    name: Post run result to Discord
+    # Runs on the default branch's workflow file, needs no checkout.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Build and send the Discord embed
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          script: |
+            const url = process.env.DISCORD_WEBHOOK_URL;
+            if (!url) {
+              core.info('DISCORD_WEBHOOK_URL is not set; skipping notification.');
+              return;
+            }
+
+            const run = context.payload.workflow_run;
+            const color = {
+              success: 0x57f287,
+              failure: 0xed4245,
+              cancelled: 0xfee75c,
+              timed_out: 0xed4245,
+              action_required: 0xed4245,
+              neutral: 0x5865f2,
+              skipped: 0x5865f2,
+            }[run.conclusion] ?? 0x99aab5;
+
+            // Name the jobs, and for anything red, the step that broke it.
+            let fields = [];
+            try {
+              const { data: jobs } = await github.rest.actions
+                .listJobsForWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                });
+              fields = jobs.map((job) => {
+                const mark = { success: '✅', failure: '❌', cancelled: '⏹️',
+                               skipped: '⏭️', timed_out: '⏱️' }[job.conclusion] ?? '•';
+                let value = job.conclusion ?? 'pending';
+                if (job.conclusion === 'failure') {
+                  const bad = (job.steps ?? [])
+                    .filter((s) => s.conclusion === 'failure')
+                    .map((s) => `\`${s.name}\``);
+                  if (bad.length) value += ` — failed at ${bad.join(', ')}`;
+                }
+                return { name: `${mark} ${job.name}`, value: String(value).slice(0, 1024), inline: true };
+              });
+            } catch (err) {
+              core.warning(`could not list jobs: ${err.message}`);
+            }
+
+            const pr = run.pull_requests?.[0];
+            const where = pr ? `PR #${pr.number}` : `\`${run.head_branch}\``;
+            const sha = run.head_sha.slice(0, 7);
+
+            // Discord allows 25 fields per embed and 1024 chars per field.
+            fields = fields.slice(0, 25);
+
+            const payload = {
+              username: 'CI',
+              embeds: [{
+                title: `${run.conclusion === 'success' ? '✅' : '❌'} ${run.name} — ${run.conclusion}`,
+                description: `**${run.name}** #${run.run_number} · ${where} · \`${sha}\``.slice(0, 2048),
+                color,
+                url: run.html_url,
+                fields,
+                footer: { text: `${context.repo.owner}/${context.repo.repo}` },
+                timestamp: run.updated_at ?? new Date().toISOString(),
+              }],
+            };
+
+            const res = await fetch(`${url}?wait=true`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              throw new Error(`Discord webhook returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+            }
+            core.info(`notified Discord: ${run.conclusion} for ${run.head_sha.slice(0, 7)}`);
