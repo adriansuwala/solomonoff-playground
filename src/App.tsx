@@ -5,7 +5,7 @@
  * context, so a paper reference that does not resolve throws at render time
  * instead of silently rendering a bare label (D6).
  */
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Async } from '@/components/UI'
 import { loadMeta } from '@/data/loaders'
 import { makeResolver, SectionProvider } from '@/lib/sections'
@@ -58,6 +58,35 @@ export function App() {
 }
 
 /**
+ * Put the reader at the top of a page when the page changes.
+ *
+ * The window is the scroller here, not `.main` -- body scrolls and the sidebar
+ * has its own overflow -- so this is window.scrollTo rather than a container
+ * reset. Without it, arriving halfway down a long page such as Scaling lands you
+ * halfway down the next one, which reads as a broken page rather than a
+ * continuation.
+ *
+ * `useLayoutEffect` rather than `useEffect`: the reset has to land in the same
+ * commit as the new content. With `useEffect` the browser paints the new page at
+ * the old scroll offset first, and the jump is visible.
+ *
+ * The ref makes this fire only on a real page change, so a re-render triggered by
+ * data arriving does not yank the reader back to the top mid-page.
+ */
+function resetScrollOnChange(page: string) {
+  const first = useRef(true)
+  useLayoutEffect(() => {
+    if (first.current) {
+      // Mounting: whatever offset the browser restored from history or a
+      // deep-link anchor is deliberate. Leave it alone.
+      first.current = false
+      return
+    }
+    window.scrollTo(0, 0)
+  }, [page])
+}
+
+/**
  * Split out of App so the resolver's useMemo is a hook of a component rather
  * than of the render callback Async invokes. A callback passed to Async is not
  * a component boundary: Async skips calling it on the loading pass, so any
@@ -75,6 +104,7 @@ function Shell({
   const resolve = useMemo(() => makeResolver(meta.sections), [meta])
   const active = NAV.find((n) => n.id === page) ?? NAV[0]!
   const groups = [...new Set(NAV.map((n) => n.group))]
+  resetScrollOnChange(page)
 
   return (
     <SectionProvider value={resolve}>
