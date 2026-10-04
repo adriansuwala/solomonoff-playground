@@ -175,12 +175,12 @@ export function initialState(seed: number): MachineState {
 /**
  * Execute exactly one instruction and return the next state.
  *
- * Copy-on-write for the tape: the four instructions that can change a cell
- * (`+`, `-`, `,`, and nothing else) allocate a fresh array, and the five that
- * cannot share the old one. A full run is allowed 300k instructions, and
- * copying 256 numbers on each of them would dominate the run for no benefit --
- * but a stepper that aliased its tape would quietly rewrite the state the
- * reader is looking at, which is the bug this avoids.
+ * Copy-on-write for the tape: the three instructions that can change a cell
+ * (`+`, `-` and `,`) allocate a fresh array, and the five that cannot share the
+ * old one. A full run is allowed 300k instructions, and copying 256 numbers on
+ * each of them would dominate the run for no benefit -- but a stepper that
+ * aliased its tape would quietly rewrite the state the reader is looking at,
+ * which is the bug this avoids.
  *
  * Anything that is not one of the eight primitives is a no-op that still costs
  * a step, because the released programs are newline-separated rows and a step
