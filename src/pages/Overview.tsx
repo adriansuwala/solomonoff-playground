@@ -53,8 +53,9 @@ export function Overview() {
           <span className="kv__v">diag(sqrt(v̂_e) + ε), the AdamW step operator</span>
         </div>
         <p className="body" style={{ marginTop: 10 }}>
-          The preconditioner matters: the paper reports that using it was
-          important, following Thrush et al. (2026).{' '}
+          The preconditioner rescales each coordinate by its own running
+          second-moment estimate, so an infrequently-updated parameter can still
+          take a usable-sized step.{' '}
           <PaperRef reference="eq2" also={['sec2.2']} inline />
         </p>
       </Disclosure>
