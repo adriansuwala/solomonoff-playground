@@ -17,14 +17,26 @@
 #    relative delta of ~1.4e-6, which straddles the comparison tolerance below.
 #    So the scipy pin is not cosmetic; a bump makes this job flaky at best.
 #
-# 2. CPU MICROARCHITECTURE. Pinning versions cannot fix this one. scipy's
+# 2. FIT CONVERGENCE -- the real cause of the first failure. `curve_fit` was
+#    called with SciPy's default ftol=xtol=gtol=1e-8, which stops the optimiser
+#    when the cost stops *moving* rather than at the optimum. The fitted
+#    parameters were therefore partly a property of the machine: measured, the
+#    shipped fit sat ~5e-5 (relative) from the true optimum while being stored
+#    to 17 significant digits. `tools/build_data.py` now converges it
+#    (FIT_TOLERANCES = 1e-14; 1e-14 and 1e-15 agree to 3e-12). See
+#    docs/decisions.md D7.
+#
+#    Under-convergence is also what made the build machine-dependent. SciPy's
 #    manylinux wheels bundle OpenBLAS, which picks a kernel at RUNTIME from the
-#    CPU's feature set, so two machines running identical wheels sum in
-#    different orders. The bundle was generated on a Sapphire Rapids Xeon
-#    (AVX-512); the ubuntu-24.04 runner has a different one, and the first CI
-#    run failed on exactly that: same builder, same pins, a handful of fitted
-#    amplitudes differing in the last few bits. Bit-identical output across two
-#    CPUs is a property of two identical CPUs, not of a correct build.
+#    CPU feature set, so the arithmetic path differs between the generation
+#    machine (Sapphire Rapids Xeon, AVX-512) and the ubuntu-24.04 runner. The
+#    first CI run failed with fitted amplitudes differing by up to 1.4e-5 --
+#    inside the 5e-5 convergence error, which is why it looked like
+#    inexplicable noise rather than a bug. Converged, the answer is the
+#    mathematical optimum and there is nothing platform-dependent left to
+#    disagree about. The inputs were always bit-identical across hosts
+#    (compute is integral, losses are CSV-parsed), which is why only the
+#    solver's internals ever varied.
 #
 # So the job does NOT demand byte equality. tools/diff_bundle.py compares the
 # rebuilt bundle to the committed one field by field and requires what is
@@ -44,9 +56,11 @@
 # moved.
 #
 # HONEST STATUS: the node job is confirmed green on a real runner. The data job
-# has run on a real runner exactly once and failed on point 2 above; the
-# tolerance-based gate has NOT yet been through a runner and must be confirmed
-# by the next push.
+# has failed on a real runner once, on point 2 above. The convergence fix and
+# the tolerance-based gate have NOT yet been through a runner; the next push is
+# the first time anyone will see whether a converged fit really does agree
+# across two CPUs. If it still drifts, the fix is not a looser tolerance -- the
+# report will name the exact JSON path and delta.
 
 name: CI
 

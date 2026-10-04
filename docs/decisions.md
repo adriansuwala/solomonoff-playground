@@ -123,3 +123,48 @@ is the only version of that which stays true as the app grows.
 
 **Consequence.** `src/components/PaperRef.tsx` renders them; nothing displays a
 number without one.
+---
+
+## D7 — Converge the power-law fits; do not ship SciPy's default tolerance
+
+**Decision.** `tools/build_data.py` calls `fit_curve_power_law_with_floor` with
+`FIT_TOLERANCES = 1e-14`, overriding SciPy's default `ftol = xtol = gtol = 1e-8`.
+The vendored function gained a keyword-only `tolerances=None` parameter that
+defaults to the upstream call, so the vendored code still behaves exactly as the
+authors' unless this build opts in.
+
+**Why.** The default stops the optimiser when the cost stops *moving*, not when
+it reaches the optimum, so the returned parameters are partly a property of the
+machine. Measured on `aitdcc_d_glibc_rand`: sweeping the tolerance moves the
+fitted amplitude by 4.4e-5 (1e-8 → 1e-10) and 6.5e-6 (1e-10 → 1e-12), settling
+to 3e-12 between 1e-14 and 1e-15. In other words the default answer sat ~5e-5
+from the true optimum while the bundle stored it to 17 significant digits.
+
+That under-convergence is what made the build machine-dependent. SciPy's
+manylinux wheels bundle OpenBLAS, which selects a kernel at runtime from the CPU
+feature set, so the arithmetic path differs between the generation machine and
+a GitHub runner. Two CPUs running identical pins disagreed by up to 1.4e-5 —
+inside the 5e-5 convergence error, which is why it looked like inexplicable
+noise. Converging the fit removes the dependence: the answer is now the
+mathematical optimum rather than a stopping artefact. The inputs are already
+bit-identical across hosts (compute is integral, losses are CSV-parsed), so once
+converged there is nothing platform-dependent left to disagree about.
+
+**Rejected.** Loosening the CI tolerance to cover 1.4e-5. That treats a
+measurement error as an acceptable result and leaves 17 digits of false
+precision in a published artefact. Rounding the stored values instead. That
+reduces the noise but does not make the value *right* — the number would still
+be 5e-5 off the optimum.
+
+**Cost.** The vendored file is no longer byte-identical to the authors'. The
+addition is additive, keyword-only and defaults to upstream behaviour; the
+docstring says so in place.
+
+**Consequence.** `scaling.json` is regenerated: 166 leaves move (111 amplitude,
+37 floor, 18 alpha), the largest by 3.8e-3 relative. `alpha` and `floor` are
+stored rounded to 5 decimals, so 52 displayed values shift in the 5th decimal.
+Nothing in the repo hardcodes them — pages read from the bundle — and
+`verify_data.py` still passes 165/165. CI's reproducibility gate
+(`tools/diff_bundle.py`) stays in place as a net, at `rtol=1e-6`: now roughly
+four orders of magnitude above the residual CPU noise, and still tight enough to
+catch the ~1.4e-6 drift a scipy bump introduces.

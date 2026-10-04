@@ -49,6 +49,13 @@ from scaling_analysis import (  # noqa: E402
     compute_frontier, fit_curve_power_law_with_floor, pareto_front,
 )
 
+# Convergence tolerance for the power-law fits, overriding SciPy's default 1e-8.
+# See the call site in build_scaling() and docs/decisions.md D7 for the
+# measurement that motivates it. 1e-14 and 1e-15 agree to 3e-12 on this data,
+# so the fit is converged and the result no longer depends on the CPU's BLAS.
+FIT_TOLERANCES = 1e-14
+
+
 # Chinchilla-form conversion from Table 2's caption: b = alpha*beta/(alpha+beta).
 def chinchilla_b(alpha: float, beta: float) -> float:
     return alpha * beta / (alpha + beta)
@@ -260,7 +267,18 @@ def fit_all_corpora(data: dict, arm_label: str) -> dict:
         # decades, which is why some short frontiers legitimately have no fit.
         if len(pts) >= 6:
             try:
-                fit = fit_curve_power_law_with_floor(frontier)
+                # FIT_TOLERANCES, not SciPy's default 1e-8. The default stops
+                # the optimiser when the cost stops moving rather than at the
+                # optimum, so the answer depends on the arithmetic path -- and
+                # SciPy's bundled OpenBLAS picks a different kernel per CPU, so
+                # two machines on identical wheels land ~1.4e-5 apart. Measured
+                # on this bundle, the default-tolerance answer is ~5e-5 away
+                # from the converged optimum, i.e. the committed numbers carried
+                # far less precision than the 17 digits they were stored with.
+                # At 1e-14 the fit is converged -- 1e-14 and 1e-15 agree to
+                # 3e-12 -- so the value stops depending on who ran it.
+                # See docs/decisions.md D7.
+                fit = fit_curve_power_law_with_floor(frontier, tolerances=FIT_TOLERANCES)
                 entry["fit"] = {
                     "alpha": round(fit.alpha, 5),
                     "amplitude": fit.amplitude,

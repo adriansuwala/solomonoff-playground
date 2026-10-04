@@ -202,14 +202,29 @@ def _floor_power_prediction_scaled(
     return floor + amplitude_at_reference * compute_scaled ** (-alpha)
 
 
-def fit_curve_power_law_with_floor(points, *, compute_scale=1e15):
+def fit_curve_power_law_with_floor(points, *, compute_scale=1e15, tolerances=None):
     """Fit ``loss = E + A * C**(-alpha)`` with SciPy ``curve_fit``.
 
-    This follows the Appendix H.2 recipe in Kim, Kotha et al.: nonlinear
+    This follows the Appendix H2 recipe in Kim, Kotha et al.: nonlinear
     least squares on raw loss, initial parameters ``[1.0, 0.5, 2.0]``, and
     nonnegative bounds.  Compute is expressed in units of ``compute_scale``
     solely to condition the optimization; this changes the reported amplitude
     but not the fitted exponent, floor, or curve.
+
+    LOCAL ADDITION (``tolerances``) -- not part of the authors' code.
+    ``curve_fit`` is called here with SciPy's default ``ftol=xtol=gtol=1e-8``,
+    which stops the optimiser as soon as the cost stops *moving* rather than
+    when it reaches the optimum.  Where it stops depends on the arithmetic path
+    taken, so the returned parameters are a property of the machine as much as
+    of the data: measured on this repo's bundle, the default-tolerance answer
+    sits ~5e-5 (relative) away from the converged optimum, and two CPUs running
+    identical numpy/scipy wheels disagree by ~1.4e-5 because SciPy's bundled
+    OpenBLAS selects a different kernel per microarchitecture.
+
+    Passing ``tolerances=<float>`` sets ``ftol=xtol=gtol=<float>``.  It is
+    keyword-only and defaults to ``None``, which passes no tolerance at all and
+    therefore reproduces the upstream call exactly.  Callers that need a
+    machine-independent answer must opt in.
     """
 
     points = np.asarray(points, dtype=float)
@@ -219,7 +234,14 @@ def fit_curve_power_law_with_floor(points, *, compute_scale=1e15):
         raise ValueError("compute and loss must be finite and positive")
     if not np.isfinite(compute_scale) or compute_scale <= 0:
         raise ValueError("compute_scale must be finite and positive")
+    if tolerances is not None and (
+        not np.isfinite(tolerances) or tolerances <= 0
+    ):
+        raise ValueError("tolerances must be a positive finite float or None")
 
+    solver_options = {} if tolerances is None else {
+        "ftol": tolerances, "xtol": tolerances, "gtol": tolerances,
+    }
     compute = points[:, 0]
     loss = points[:, 1]
     compute_scaled = compute / compute_scale
@@ -230,6 +252,7 @@ def fit_curve_power_law_with_floor(points, *, compute_scale=1e15):
         p0=[1.0, 0.5, 2.0],
         bounds=([0.0, 0.0, 0.0], [np.inf, np.inf, np.inf]),
         maxfev=100_000,
+        **solver_options,
     )
     amplitude_at_reference, alpha, floor = map(float, parameters)
     amplitude = amplitude_at_reference * compute_scale**alpha
