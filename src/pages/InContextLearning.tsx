@@ -26,23 +26,19 @@ import {
   ChartFrame, HoverReadout, Series, formatTick, niceTicks, useTooltip,
 } from '@/components/Chart'
 import { decadeTicks } from '@/lib/scales'
-import type {
-  IclArm, IclData, IclFile, IclRow, Meta, SumBehavior,
-} from '@/data/types'
+import { pct } from '@/lib/format'
+import {
+  ARM_META, ARM_ORDER, ASSOC_V, ASSOC_V_MAX,
+  CATEGORY_KEYS, assocDictEnds, assocSeries, assocTop, armOf, entropyPeak,
+  extraBest, extraSeries, extraTop, iqrBits, m0, sumBehaviorRows, sumLowM,
+  sumRowAt, sweepCell, sweepSeries,
+  type CategoryKey, type IclArmKey, type Pt,
+} from '@/lib/icl'
+import type { IclData, Meta, SumBehavior } from '@/data/types'
 
 // ---------------------------------------------------------------------------
 // Arms
 // ---------------------------------------------------------------------------
-
-/** Keys as they appear in icl.json, which uses `uniform_prior`, not `uniform`. */
-const ARM_ORDER = ['selfplay', 'uniform_prior', 'pcfg'] as const
-type IclArmKey = (typeof ARM_ORDER)[number]
-
-const ARM_META: Record<IclArmKey, 'selfplay' | 'uniform' | 'pcfg'> = {
-  selfplay: 'selfplay',
-  uniform_prior: 'uniform',
-  pcfg: 'pcfg',
-}
 
 const ARM_COLOR: Record<IclArmKey, string> = {
   selfplay: 'var(--arm-selfplay)',
@@ -65,149 +61,10 @@ const ARM_LABEL: Record<IclArmKey, string> = {
 /** Chance for a single byte under argmax: 1/256 = 0.39%. */
 const CHANCE = 1 / 256
 
-const pct = (v: number | null | undefined, digits = 1): string =>
-  v === null || v === undefined ? '—' : `${(v * 100).toFixed(digits)}%`
 
 // ---------------------------------------------------------------------------
 // Coordinate recovery for the positional-key files
 // ---------------------------------------------------------------------------
-
-/**
- * The three associative-recall dictionary sizes in icl_v3_results, keyed by the
- * harness's `V=` axis.
- */
-const ASSOC_V = [4, 16, 64] as const
-/** The largest size in the sweep: where the three arms actually separate. */
-const ASSOC_V_MAX: number = ASSOC_V[2]
-
-/**
- * File coordinates are now resolved upstream: tools/build_data.py parses both
- * the named harness keys (`m=8|k=2`, `m=128|V=64`) and the bare positional ones
- * (`max|8|2`) that run_icl.py writes, and tools/verify_data.py fails the build
- * if the main sweep has an unresolved cell. These helpers therefore read m and
- * k straight off the row and stay null-guarded, so an unplottable combination
- * renders as "not measured" rather than as a line through missing values.
- */
-function sweepRows(file: IclFile | undefined, task: string, k: number): IclRow[] {
-  if (!file) return []
-  return file.rows.filter((r) => r.task === task && r.k === k && r.m !== null)
-}
-
-// ---------------------------------------------------------------------------
-// Series extraction (every metric lookup is guarded: names differ by harness)
-// ---------------------------------------------------------------------------
-
-interface Pt { m: number; v: number; p: number | null }
-
-function armOf(icl: IclData, arm: IclArmKey): IclArm | null {
-  return icl.arms[arm] ?? null
-}
-
-/** Accuracy against m for one arm, one task, one arity, one metric. */
-function sweepSeries(
-  icl: IclData, arm: IclArmKey, fileName: string,
-  task: string, k: number, metric: string,
-): Pt[] | null {
-  const file = armOf(icl, arm)?.files[fileName]
-  if (!file) return null
-  const out: Pt[] = []
-  for (const row of sweepRows(file, task, k)) {
-    if (row.m === null) continue
-    const v = row.metrics[metric]
-    if (v === undefined) continue
-    out.push({ m: row.m, v, p: row.metrics['p_correct'] ?? null })
-  }
-  return out.length > 0 ? out.sort((a, b) => a.m - b.m) : null
-}
-
-/** One cell of the main sweep, for the numbers quoted in prose. */
-function sweepCell(
-  icl: IclData, arm: IclArmKey, task: string, k: number, m: number,
-): number | null {
-  const series = sweepSeries(icl, arm, 'icl_results', task, k, 'acc')
-  if (!series) return null
-  return series.find((p) => p.m === m)?.v ?? null
-}
-
-function extraSeries(
-  icl: IclData, arm: IclArmKey, task: string,
-): Pt[] | null {
-  const file = armOf(icl, arm)?.files['icl_v3_results']
-  if (!file) return null
-  const out: Pt[] = []
-  for (const row of file.rows) {
-    if (row.task !== task || row.m === null) continue
-    const v = row.metrics['acc']
-    if (v === undefined) continue
-    out.push({ m: row.m, v, p: row.metrics['p_correct'] ?? null })
-  }
-  return out.length > 0 ? out.sort((a, b) => a.m - b.m) : null
-}
-
-function assocSeries(
-  icl: IclData, arm: IclArmKey, v: number,
-): Pt[] | null {
-  const file = armOf(icl, arm)?.files['icl_v3_results']
-  if (!file) return null
-  const out: Pt[] = []
-  for (const row of file.rows) {
-    if (row.task !== 'assoc' || row.v !== v || row.m === null) continue
-    const a = row.metrics['acc']
-    if (a === undefined) continue
-    out.push({ m: row.m, v: a, p: row.metrics['p_correct'] ?? null })
-  }
-  return out.length > 0 ? out.sort((a, b) => a.m - b.m) : null
-}
-
-/** First and last cell of the extra-dictionary-prints sweep, as a range. */
-function assocDictEnds(icl: IclData, arm: IclArmKey): string {
-  const rows = (armOf(icl, arm)?.files['icl_assoc_dict_results']?.rows ?? [])
-    .filter((r) => r.extra !== null)
-    .sort((a, b) => (a.extra ?? 0) - (b.extra ?? 0))
-  const a = rows[0]?.metrics['acc']
-  const b = rows[rows.length - 1]?.metrics['acc']
-  return a !== undefined && b !== undefined ? `${pct(a)} → ${pct(b)}` : '—'
-}
-
-/** Accuracy in the largest-m cell of a series, for the numbers quoted in prose. */
-function lastOf(pts: Pt[] | null): number | null {
-  return pts !== null && pts.length > 0 ? (pts[pts.length - 1]?.v ?? null) : null
-}
-function assocTop(icl: IclData, arm: IclArmKey, v: number): number | null {
-  return lastOf(assocSeries(icl, arm, v))
-}
-function extraTop(icl: IclData, arm: IclArmKey, task: string): number | null {
-  return lastOf(extraSeries(icl, arm, task))
-}
-/** Best cell anywhere in a task's sweep, for claims phrased as "never above". */
-function extraBest(icl: IclData, arm: IclArmKey, task: string): number | null {
-  const pts = extraSeries(icl, arm, task)
-  return pts !== null && pts.length > 0
-    ? Math.max(...pts.map((p) => p.v))
-    : null
-}
-
-function m0(icl: IclData, arm: IclArmKey, task: string, metric: string): number | null {
-  const file = armOf(icl, arm)?.files['icl_m0_results']
-  if (!file) return null
-  for (const row of file.rows) {
-    if (row.task !== task) continue
-    const v = row.metrics[metric]
-    if (v !== undefined) return v
-  }
-  return null
-}
-
-/** The 4096-trial sum cells for m <= 4, which the main sweep does not cover. */
-function sumLowM(icl: IclData, arm: IclArmKey): number[] | null {
-  const file = armOf(icl, arm)?.files['icl_sum_lowm_results']
-  if (!file) return null
-  const out = file.rows
-    .filter((r) => r.task === 'sum' && r.m !== null && r.metrics['acc'] !== undefined)
-    .sort((a, b) => (a.m ?? 0) - (b.m ?? 0))
-    .map((r) => r.metrics['acc'] ?? Number.NaN)
-  return out.length > 0 ? out : null
-}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -824,18 +681,13 @@ function M0Note({ icl }: { icl: IclData }) {
 // Figure 5
 // ---------------------------------------------------------------------------
 
-const CATEGORY_KEYS = [
-  'correctAnswer', 'low4BitsCorrect', 'preferredBytes', 'contextByte', 'other',
-] as const
-type CategoryKey = (typeof CATEGORY_KEYS)[number]
-
 function categoryValue(row: SumBehavior, key: string): number | null {
   const hit = CATEGORY_KEYS.find((c) => c === key)
   return hit === undefined ? null : row[hit]
 }
 
 function SumBehaviorSection({ icl }: { icl: IclData }) {
-  const rows = [...icl.sumBehavior].sort((a, b) => a.m - b.m)
+  const rows = sumBehaviorRows(icl)
   if (rows.length === 0) {
     return (
       <>
@@ -854,11 +706,12 @@ function SumBehaviorSection({ icl }: { icl: IclData }) {
   const show = (m: number, k: CategoryKey, digits = 1): string =>
     pct(shareAt(m, k), digits)
   const m512 = at(512)
-  const peak = rows.reduce((best, r) => (r.entropyMeanBits > best.entropyMeanBits ? r : best))
-  const bandAt = (m: number): number => {
-    const r = at(m)
-    return r === null ? 0 : r.entropyQ75Bits - r.entropyQ25Bits
-  }
+  const peakM = entropyPeak(rows)
+  const peak = peakM === null ? null : sumRowAt(rows, peakM.m)
+  /** Null when m is absent: never a fabricated 0.0, which would invert the claim. */
+  const bandAt = (m: number): number | null => iqrBits(rows, m)
+  const band0 = bandAt(0)
+  const band512 = bandAt(512)
 
   return (
     <>
@@ -909,8 +762,8 @@ function SumBehaviorSection({ icl }: { icl: IclData }) {
         </li>
         <li>
           <strong>Losing confidence.</strong> Entropy <em>rises</em> through this
-          stage rather than falling, peaking at m = {peak.m} (
-          {peak.entropyMeanBits.toFixed(2)} bits, up from{' '}
+          stage rather than falling, peaking at{' '}
+          {peak === null ? '—' : `m = ${peak.m} (${peak.entropyMeanBits.toFixed(2)} bits`} up from{' '}
           {(first?.entropyMeanBits ?? 0).toFixed(2)} at m = 0). The reading is
           that the model commits, gets it wrong several times running, and is
           pushed off its confident prior onto a broad distribution. The
@@ -943,15 +796,16 @@ function SumBehaviorSection({ icl }: { icl: IclData }) {
         model changing strategy — prior, then copying, then partial arithmetic,
         then the real computation — and each switch has a signature in panel
         (a) before it shows up as accuracy. The entropy spike around m ={' '}
-        {peak.m} is the visible cost of the transition.
+        {peak?.m ?? '—'} is the visible cost of the transition.
       </Claim>
 
       <p className="card__note">
         Panel (b) ends at {m512 ? m512.entropyMeanBits.toFixed(2) : '—'} bits,
         not at 0, so the model is far from a point mass at the end. One thing
         the interquartile band does <em>not</em> do is shrink: it is{' '}
-        {bandAt(0).toFixed(2)} bits wide at m = 0 and{' '}
-        {m512 ? bandAt(512).toFixed(2) : '—'} bits at m = 512, i.e. wider in
+        {band0 === null ? '—' : `${band0.toFixed(2)} bits`} wide at m = 0 and{' '}
+        {band512 === null ? '—' : `${band512.toFixed(2)} bits`} at m = 512, i.e.{' '}
+        {(band0 !== null && band512 !== null && band512 > band0) ? 'wider' : 'not wider'} in
         absolute terms. That is not a contradiction — the distribution as a whole
         moves away from uniform, so a fixed spread subtends a smaller fraction of
         the remaining entropy. Read panel (b) as the level dropping, not as the
