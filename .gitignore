@@ -11,4 +11,4 @@ __pycache__/
 # The generated data bundle is committed: it is a build product that the app
 # loads at runtime and the site is deployed as static files. Regenerating it
 # must not produce a dirty diff -- CI runs tools/verify_data.py to prove it.
-# (Marked generated in .gitattributes so blame points at tools/build_data.py.)
+# (Marked generated in .gitattributes so blame points at tools/build_data.py.).beads/
