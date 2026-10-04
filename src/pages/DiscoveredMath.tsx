@@ -91,7 +91,9 @@ export function DiscoveredMath() {
                 <em>upper</em> bound on the true first appearance, and the real
                 gap is likely wider, not narrower. Third, the arithmetic row at
                 round 0 is not a discovery at all: it is what the generator's
-                initialisation emits.
+                initialisation emits. That reading rests on a single round-0
+                record in the whole release — one rung/seed pair out of 62 — so
+                it is one observation, not a characterisation of the prior.
               </Claim>
 
               <Claim caveat reference="sec6">
@@ -143,8 +145,11 @@ export function DiscoveredMath() {
                 <p className="body">
                   {math.totalHits.toLocaleString()} hits contain{' '}
                   {math.totalDistinctPrograms.toLocaleString()} distinct program
-                  strings: the same program is re-emitted in many rounds, which
-                  is why the browser de-duplicates on rung, seed, round and text.
+                  strings: the same program is re-emitted in many rounds. The
+                  browser below shows every hit row as released — including the{' '}
+                  {(math.totalHits - math.totalDistinctPrograms).toLocaleString()}{' '}
+                  that repeat an earlier program string, since a re-emission at a
+                  later round is itself part of the evidence.
                 </p>
               </Card>
             </>

@@ -545,22 +545,34 @@ function ArmChart({ t, row }: { t: Table5; row: Table5Row | undefined }) {
 // Verdict
 // ---------------------------------------------------------------------------
 
+/**
+ * Two losses are treated as a printed tie at the precision the authors use.
+ * reward_arms.tex rounds every cell to 2 dp, and bolds `none`, `uniform` AND
+ * `shuffle` together on the random-bytes row because they agree to that
+ * precision. Counting the 0.0031 bits/byte gap as a strict loss made the page
+ * claim "worse on 10 of 10 rows" where the paper's own table shows a tie.
+ */
+const TIE_EPS = 0.005
+
 interface PairResult {
   /** Rows where `arm` ends up worse than `base`, with the ratio. */
   worse: [string, number][]
   /** Rows where it does not. */
   notWorse: [string, number][]
+  /** Rows equal to `base` at the printed precision: neither better nor worse. */
+  ties: string[]
 }
 
 /** Compare two arms across every row where both have a scored cell. */
 function compareArms(t: Table5, arm: string, base: string): PairResult {
-  const out: PairResult = { worse: [], notWorse: [] }
+  const out: PairResult = { worse: [], notWorse: [], ties: [] }
   for (const row of t.rows) {
     const a = cellOf(t, row, arm)
     const b = cellOf(t, row, base)
     if (a === null || b === null || b <= 0) continue
     const ratio = a / b
-    if (a > b) out.worse.push([row.label, ratio])
+    if (Math.abs(a - b) <= TIE_EPS) out.ties.push(row.label)
+    else if (a > b) out.worse.push([row.label, ratio])
     else out.notWorse.push([row.label, ratio])
   }
   return out
@@ -667,7 +679,14 @@ function Verdict({ t }: { t: Table5 }) {
         <strong>The pairing matters, not just the reward distribution.</strong>{' '}
         <code>shuffle</code> preserves the set of reward values and destroys only
         the correspondence between a program and its reward. It is worse than
-        the canonical arm on {shuffle.worse.length} of {total} rows, median{' '}
+        the canonical arm on {shuffle.worse.length} of {total} rows
+        {shuffle.ties.length > 0 && (
+          <>
+            {' '}(and ties it on {shuffle.ties.length}:{' '}
+            {shuffle.ties.join(', ')}, which the paper&rsquo;s table prints in
+            bold alongside the canonical arm)
+          </>
+        )}, median{' '}
         {fmt(median(ratios(shuffle.worse)))}× — and worst where the learnable
         frontier is narrow: arithmetic{' '}
         {valuesOn(t, 'shuffle', ['arithmetic'])} against{' '}

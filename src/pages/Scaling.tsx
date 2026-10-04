@@ -360,13 +360,17 @@ function ScalingExplorer({ meta, scaling }: { meta: Meta; scaling: Scaling }) {
       <Disclosure summary="What the compute axis actually counts">
         <div className="kv">
           <span className="kv__k">C</span>
-          <span className="kv__v">K · N · {meta.compute.pool} · {meta.compute.context} · (round + 1)</span>
+          <span className="kv__v">K · N · pool · {meta.compute.context} · (round + 1)</span>
           <span className="kv__k">K</span>
           <span className="kv__v">ensemble size — number of independently seeded copies averaged</span>
           <span className="kv__k">N</span>
           <span className="kv__v">parameter count of the rung</span>
-          <span className="kv__k">{meta.compute.pool}</span>
-          <span className="kv__v">programs sampled per self-play round (the pool)</span>
+          <span className="kv__k">pool</span>
+          <span className="kv__v">
+            programs sampled per round: a constant {meta.compute.pool} for
+            self-play, and a per-rung count for each fixed arm, which is what
+            the authors used when they drew these curves
+          </span>
           <span className="kv__k">{meta.compute.context}</span>
           <span className="kv__v">context length in bytes, i.e. tokens per program</span>
           <span className="kv__k">round + 1</span>
@@ -454,7 +458,7 @@ function FrontierChart({
         height={420}
         xDomain={xDomain}
         yDomain={yDomain}
-        xLabel="effective compute C = K · N · 1536 · 4096 · (round+1)"
+        xLabel="effective compute C = K · N · pool · 4096 · (round+1)"
         yLabel={`bits/byte on ${label}`}
       >
         {({ x, y, innerWidth, innerHeight }) => {
@@ -569,7 +573,7 @@ function FitCard({
   return (
     <Card
       title={`The fit for ${label}`}
-      note={`${cs.nFrontier} points on the frontier, ${meta.compute.pool} programs per round, ${meta.compute.context}-byte context.`}
+      note={`${cs.nFrontier} points on the frontier, ${meta.compute.pool} programs per self-play round, ${meta.compute.context}-byte context.`}
     >
       {fit ? (
         <>

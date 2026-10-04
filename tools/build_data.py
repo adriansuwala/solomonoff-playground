@@ -30,6 +30,7 @@ import json
 import math
 import sys
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -53,9 +54,29 @@ def chinchilla_b(alpha: float, beta: float) -> float:
     return alpha * beta / (alpha + beta)
 
 
-def effective_compute(K: int, N: int, round_index: int) -> float:
+def arm_pool(arm_key: str, rung: str) -> int:
+    """Programs per round for this arm at this rung.
+
+    Self-play draws a constant P.POOL (1536) at every rung, but the two fixed
+    arms were run at per-rung rates the authors shipped alongside the CSVs.
+    fig2.py reads them via pool_from() and its docstring says so: "1536 programs
+    per round for self-play and the per-rung counts in
+    data/*_programs_per_round.json". Using P.POOL for all three put the fixed
+    arms on an x-axis the authors never used, which shifted the shared-budget
+    arm comparison.
+    """
+    if arm_key == "selfplay":
+        return P.POOL
+    # The bundle calls this arm "uniform"; the authors' file is named "prior".
+    file_key = "prior" if arm_key == "uniform" else arm_key
+    with open(FIG / "fig2_transfer_across_modalities" / "data"
+              / f"{file_key}_programs_per_round.json") as fh:
+        return int(json.load(fh)["programs_per_round"][rung])
+
+
+def effective_compute(K: int, N: int, round_index: int, pool: int) -> float:
     """C = K * N * POOL * CTX * (round + 1), per the authors' scaling_analysis."""
-    return K * N * P.POOL * P.CTX * (round_index + 1.0)
+    return K * N * pool * P.CTX * (round_index + 1.0)
 
 
 def read_frontier_csv(path: Path) -> dict:
@@ -166,7 +187,7 @@ def load_fig2_csv(arm_key: str) -> dict:
         FIG / "fig2_transfer_across_modalities" / "data" / P.ARMS[arm_key]["csv"])
 
 
-def columnize(data: dict) -> dict:
+def columnize(data: dict, pool_for: "Callable[[str], int]") -> dict:
     """Trajectory -> columnar rows with interned string tables.
 
     A list of dicts cost 114 B/row (7.4 MB for selfplay alone): every row
@@ -192,7 +213,8 @@ def columnize(data: dict) -> dict:
                     cols["K"].append(k)
                     cols["ci"].append(ci[corpus])
                     cols["bpb"].append(round(bpb, 5))
-                    cols["C"].append(round(effective_compute(k, N, idx), 3))
+                    cols["C"].append(
+                        round(effective_compute(k, N, idx, pool_for(rung)), 3))
 
     # Sorted by (corpus, compute) so the app can slice a corpus's series without
     # sorting, and so frontier order is preserved as a prefix.
@@ -257,7 +279,10 @@ def build_scaling() -> dict:
     comparison (from the fig2 CSVs)."""
     traj, traj_prov = load_traj_json()
     out: dict = {
-        "ladder": {**columnize(traj), "corpora": fit_all_corpora(traj, "ladder")},
+        "ladder": {
+            **columnize(traj, lambda rung: P.POOL),
+            "corpora": fit_all_corpora(traj, "ladder"),
+        },
         "ladderProvenance": traj_prov,
         "arms": {},
         "exponents": [],
@@ -266,7 +291,7 @@ def build_scaling() -> dict:
     for arm_key in P.ARMS:
         data = load_fig2_csv(arm_key)
         out["arms"][arm_key] = {
-            **columnize(data),
+            **columnize(data, lambda rung, a=arm_key: arm_pool(a, rung)),
             "corpora": fit_all_corpora(data, arm_key),
         }
 

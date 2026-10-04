@@ -180,6 +180,63 @@ check("every corpus in the data is declared in meta",
 check("Table 2 rows all have a computed exponent",
       all(e["alpha"] is not None for e in scaling["exponents"]),
       str([e["paperLabel"] for e in scaling["exponents"] if e["alpha"] is None]))
+# The per-arm compute pools are the Figure 2 x-axis. Self-play is a constant
+# 1536 at every rung; the two fixed arms were run at per-rung rates the authors
+# shipped next to the CSVs. If the builder collapses these to one pool for all
+# three arms, the shared-budget arm comparison silently moves onto an axis the
+# authors never used -- which is exactly the defect these checks exist to catch.
+FIG2_DIR = FIG / "fig2_transfer_across_modalities" / "data"
+AUTHOR_POOLS = {
+    "selfplay": {r: 1536 for r in
+                 ("d64h1L1", "d128h2L2", "d128h2L4", "d256h4L4", "d256h4L8",
+                  "d512h8L8")},
+    "prior": {"d64h1L1": 1024, "d128h2L2": 2048, "d128h2L4": 1024,
+              "d256h4L4": 2048, "d256h4L8": 1024},
+    "pcfg": {"d64h1L1": 512, "d128h2L2": 2048, "d128h2L4": 2048,
+             "d256h4L4": 1024, "d256h4L8": 1024},
+}
+for _arm in ("prior", "pcfg"):
+    check(f"figure2 pool file for {_arm} exists",
+          (FIG2_DIR / f"{_arm}_programs_per_round.json").exists())
+    check(f"figure2 pools for {_arm} match the authors' file",
+          (lambda a=_arm: json.load(open(
+              FIG2_DIR / f"{a}_programs_per_round.json"
+          ))["programs_per_round"] == AUTHOR_POOLS[a])())
+
+# Recover the pool actually used for each row from C = K * N * pool * CTX * (r+1)
+# and check it against the authors' per-rung table. This is the real guard: it
+# reads the bundle, not the builder's intent.
+CTX = meta["compute"]["context"]
+for _arm_key, _arm_pool_key in (("selfplay", "selfplay"), ("uniform", "prior"),
+                                ("pcfg", "pcfg")):
+    _cols = scaling["arms"][_arm_key]["columns"]
+    _rungs = scaling["arms"][_arm_key]["stringTables"]["rungs"]
+    # Each column is sorted by (corpus, C), so rung is not directly available;
+    # instead group by (N, round, K) and infer the pool from any member.
+    _seen = {}
+    _bad = []
+    for _i, _c in enumerate(_cols["C"]):
+        _k, _n = _cols["K"][_i], _cols["N"][_i]
+        _r = float(_cols["round"][_i]) + 1.0
+        _pool = _c / (_k * _n * CTX * _r)
+        _rounded = round(_pool)
+        if _rounded <= 0 or abs(_pool - _rounded) > 0.05:
+            _bad.append((_i, _pool))
+        _seen.setdefault(_rounded, 0)
+        _seen[_rounded] += 1
+    check(f"{_arm_key}: every compute value has an integer pool factor",
+          not _bad, str(_bad[:3]))
+    check(f"{_arm_key}: pool factors are the authors' set "
+          f"{sorted(AUTHOR_POOLS[_arm_pool_key].values())}",
+          set(_seen).issubset(set(AUTHOR_POOLS[_arm_pool_key].values())),
+          f"got {sorted(_seen)}")
+    if _arm_pool_key == "selfplay":
+        check("selfplay uses one constant pool at every rung",
+              set(_seen) == {1536}, f"got {sorted(_seen)}")
+    else:
+        check(f"{_arm_key} uses more than one pool (per-rung, not constant)",
+              len(_seen) > 1, f"got {sorted(_seen)}")
+
 check("every section reference resolves",
       all(r in meta["sections"] for r in
           [t["ref"] for t in meta["rewardArms"]]

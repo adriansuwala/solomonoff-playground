@@ -446,7 +446,7 @@ function MethodBody({ meta }: { meta: Meta }) {
 
       <Card
         title="Equation 3 — the generator’s RL objective"
-        note="KL-regularised policy gradient against a Solomonoff prior, so the generator is pulled toward short programs rather than drifting to whatever is currently paying."
+        note="Reconstruction, not a transcription. The released artefacts do not contain this formula; see the note below."
       >
         <div className="program">
           J(φ) = E_x[ (r(x)/β) · log( g_φ(x) / g_0(x) ) ] − β · KL( g_φ ‖ g_0 )
@@ -460,6 +460,13 @@ function MethodBody({ meta }: { meta: Meta }) {
           is what keeps the sampler near the prior instead of collapsing onto a
           single high-reward program.{' '}
           <PaperRef reference="eq3" also={['sec2.2']} inline />
+        </p>
+        <p className="card__note">
+          This card is our reconstruction of the objective, not the paper&rsquo;s
+          printed equation: no released artefact contains the 1/β reward scaling
+          or the −β·KL coefficient, so treat the constants as illustrative. The
+          structure — reward-weighted log-ratio against the prior, plus a KL
+          penalty — is what §2.2 describes.
         </p>
       </Card>
 
@@ -475,20 +482,32 @@ function MethodBody({ meta }: { meta: Meta }) {
           the same pool, never against an absolute scale.{' '}
           <PaperRef reference="eq4" also={['sec2.2']} inline />
         </p>
+        <p className="card__note">
+          Also a reconstruction. The mean-and-standard-deviation normaliser is
+          the standard group-relative form, but the released artefacts do not
+          fix the ε or state whether the standard deviation is taken over the
+          pool or over seeds.
+        </p>
       </Card>
 
       <Card
         title="Equation 5 — expert iteration"
-        note="A reward-weighted SFT term on the learner side, pulling the generator toward its own high-reward programs."
+        note="Reconstruction, not a transcription. See the note below."
       >
         <div className="program">
           L_SFT(φ) = − E_x~g_φ [ w(x) · log g_φ(x) ],  w(x) ∝ max( 0, r(x) − τ )
         </div>
         <p className="body" style={{ marginTop: 10 }}>
           This is the term that makes the loop self-reinforcing rather than purely
-          exploratory: programs that paid once get imitated. We render the
-          threshold form; the paper’s notation differs in detail.{' '}
+          exploratory: programs that paid once get imitated.{' '}
           <PaperRef reference="eq5" also={['sec2.2']} inline />
+        </p>
+        <p className="card__note">
+          Note the parameterisation: <code>L_SFT(φ)</code> is a loss over the{' '}
+          <em>generator</em> g_φ, not over the learner, even though it is
+          supervised fine-tuning — the generator is being trained to imitate its
+          own high-reward programs. The threshold form is our rendering; no
+          released artefact fixes τ or the exact weight.
         </p>
       </Card>
 
