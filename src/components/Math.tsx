@@ -64,6 +64,14 @@ export const SITE_MATH: { tex: string; display: boolean }[] = [
   { tex: String.raw`\tau`, display: false },
   { tex: String.raw`\varepsilon`, display: false },
   { tex: String.raw`\beta`, display: false },
+  // RewardSim: the reward factored into the three terms the page plots.
+  { tex: String.raw`r_i = \left|\left\langle \nabla_\theta L(y_i;\theta_{\text{now}}),\, P_e \odot \delta\theta_e \right\rangle\right| = \underbrace{\lVert\nabla_\theta L\rVert}_{\text{magnitude}} \cdot \underbrace{\lVert P_e \odot \delta\theta_e\rVert}_{\text{path travelled}} \cdot \underbrace{\left|\cos(\nabla_\theta L,\, P_e \odot \delta\theta_e)\right|}_{\text{agreement}}`, display: true },
+  { tex: String.raw`\lVert\nabla_\theta L\rVert`, display: false },
+  { tex: String.raw`\lVert P_e \odot \delta\theta_e\rVert`, display: false },
+  { tex: String.raw`\underbrace{\lVert\nabla_\theta L\rVert}_{\text{magnitude}}`, display: false },
+  { tex: String.raw`\delta\theta_e = \theta_{\lfloor e/2 \rfloor} - \theta_e`, display: false },
+  { tex: String.raw`g_\phi`, display: false },
+  { tex: String.raw`g_0`, display: false },
   // Prose fragments. Small, but each one was hand-set Unicode before, and the
   // floor and the abs-value bars are the two that read worst in monospace.
   { tex: String.raw`\lfloor e/2 \rfloor`, display: false },
