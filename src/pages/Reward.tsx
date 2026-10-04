@@ -14,23 +14,12 @@ import { loadTable5 } from '@/data/loaders'
 import { Async, Card, Claim, Disclosure, PaperRef } from '@/components/UI'
 import { ChartFrame } from '@/components/Chart'
 import type { Table5, Table5Row } from '@/data/types'
-
-/**
- * Footnote markers on the ablation headers, matching the paper's Table 5
- * caption. `Table5.notes` carries the prose; only the mapping of which column
- * carries which marker has to be written down somewhere.
- */
-const FOOTNOTES: Record<string, string> = { last_step: 'b', loss_delta: 'a,b' }
-
-
-/**
- * The uniform-over-256-bytes baseline: 8.0 bits/byte. This is what a predictor
- * ignorant of the corpus alphabet scores, NOT what our random-init control
- * scores -- that control reads 8.72 (see local_measurements.json), because a
- * randomly initialised transformer is not a uniform sampler. Every "above the
- * baseline" test below is therefore against 8.0, which is the weaker bar.
- */
-const UNIFORM_256_BPB = 8
+import {
+  FOOTNOTES, UNIFORM_256_BPB,
+  armBars, canonicalBestCount, cellRatio, compareArms, fmt, heatAlpha,
+  heatScale, heldOutSeqs, labels, median, minSeeds, ratios, rowLabel,
+ scoredRowCount, splitAbove, valuesOn,
+} from '@/lib/reward'
 
 export function Reward() {
   return (
@@ -318,34 +307,6 @@ function Table5Table({ t }: { t: Table5 }) {
 
 const HEAT_RGB = '227, 179, 65'
 
-/** Opacity ∝ how much worse than the row's best, on a log ratio scale. */
-function heatAlpha(ratio: number, maxRatio: number): number {
-  if (!(ratio > 1)) return 0
-  const span = Math.log10(Math.max(maxRatio, 10))
-  const t = Math.log10(ratio) / span
-  return Math.min(1, Math.max(0, t)) * 0.72
-}
-
-/**
- * The best loss in a row, compared at the precision the authors' table is
- * printed to. reward_arms.tex rounds every cell to 2 dp and shares the bold
- * between arms that agree there, and build_data.py computes bestIndex the same
- * way. Comparing at full precision made this function disagree with bestIndex
- * on the random-bytes row, where uniform (8.0163) beats none (8.0204) by 0.004
- * -- both print as 8.02 and are bold together in the paper. The heatmap and the
- * table would then shade different cells as best on the same row.
- */
-function rowBest(row: Table5Row): number | null {
-  let best: number | null = null
-  for (const c of row.cells) {
-    if (!c) continue
-    if (best === null || Math.round(c.bpb * 100) < Math.round(best * 100)) {
-      best = c.bpb
-    }
-  }
-  return best
-}
-
 function Heatmap({
   t, selected, onSelect,
 }: {
@@ -353,14 +314,7 @@ function Heatmap({
   selected: string
   onSelect: (key: string) => void
 }) {
-  const ratios: number[] = []
-  for (const row of t.rows) {
-    const best = rowBest(row)
-    if (best === null || best <= 0) continue
-    for (const c of row.cells) if (c) ratios.push(c.bpb / best)
-  }
-  const maxRatio = ratios.length ? Math.max(...ratios) : 10
-  const legendSpan = Math.max(maxRatio, 10)
+  const { maxRatio, legendSpan } = heatScale(t)
 
   return (
     <Card
@@ -379,7 +333,6 @@ function Heatmap({
           </thead>
           <tbody>
             {t.rows.map((row) => {
-              const best = rowBest(row)
               return (
                 <tr
                   key={row.key}
@@ -407,10 +360,8 @@ function Heatmap({
                   </td>
                   {t.columns.map((col, i) => {
                     const cell = row.cells[i]
-                    const alpha =
-                      cell && best !== null && best > 0
-                        ? heatAlpha(cell.bpb / best, maxRatio)
-                        : 0
+                    const ratio = cellRatio(t, row, col.key)
+                    const alpha = ratio === null ? 0 : heatAlpha(ratio, maxRatio)
                     return (
                       <td
                         key={col.key}
@@ -420,8 +371,8 @@ function Heatmap({
                           minWidth: 56,
                         }}
                         title={
-                          cell && best !== null && best > 0
-                            ? `${cell.bpb.toFixed(2)} bits/byte — ${(cell.bpb / best).toFixed(1)}× this row's best`
+                          cell && ratio !== null
+                            ? `${cell.bpb.toFixed(2)} bits/byte — ${ratio.toFixed(1)}× this row's best`
                             : 'unscored'
                         }
                       >
@@ -477,22 +428,7 @@ function Heatmap({
 // ---------------------------------------------------------------------------
 
 function ArmChart({ t, row }: { t: Table5; row: Table5Row | undefined }) {
-  const bars = (row?.cells ?? [])
-    .map((cell, i) => ({
-      key: t.columns[i]?.key ?? String(i),
-      label: t.columns[i]?.label ?? String(i),
-      bpb: cell?.bpb ?? null,
-      kUsed: cell?.kUsed ?? null,
-    }))
-    .filter(
-      (b): b is {
-        key: string
-        label: string
-        bpb: number
-        kUsed: number | null
-      } => b.bpb !== null,
-    )
-    .sort((a, b) => a.bpb - b.bpb)
+  const bars = armBars(t, row)
 
   if (!row || bars.length === 0) {
     return <div className="loading">No scored arms for this dataset.</div>
@@ -556,87 +492,7 @@ function ArmChart({ t, row }: { t: Table5; row: Table5Row | undefined }) {
 // Verdict
 // ---------------------------------------------------------------------------
 
-/**
- * Two losses are treated as a printed tie at the precision the authors use.
- * reward_arms.tex rounds every cell to 2 dp, and bolds `none`, `uniform` AND
- * `shuffle` together on the random-bytes row because they agree to that
- * precision. Counting the 0.0031 bits/byte gap as a strict loss made the page
- * claim "worse on 10 of 10 rows" where the paper's own table shows a tie.
- */
-const TIE_EPS = 0.005
-
-interface PairResult {
-  /** Rows where `arm` ends up worse than `base`, with the ratio. */
-  worse: [string, number][]
-  /** Rows where it does not. */
-  notWorse: [string, number][]
-  /** Rows equal to `base` at the printed precision: neither better nor worse. */
-  ties: string[]
-}
-
-/** Compare two arms across every row where both have a scored cell. */
-function compareArms(t: Table5, arm: string, base: string): PairResult {
-  const out: PairResult = { worse: [], notWorse: [], ties: [] }
-  for (const row of t.rows) {
-    const a = cellOf(t, row, arm)
-    const b = cellOf(t, row, base)
-    if (a === null || b === null || b <= 0) continue
-    const ratio = a / b
-    if (Math.abs(a - b) <= TIE_EPS) out.ties.push(row.label)
-    else if (a > b) out.worse.push([row.label, ratio])
-    else out.notWorse.push([row.label, ratio])
-  }
-  return out
-}
-
-function cellOf(t: Table5, row: Table5Row, key: string): number | null {
-  const i = t.columns.findIndex((c) => c.key === key)
-  if (i < 0) return null
-  const cell = row.cells[i]
-  return cell ? cell.bpb : null
-}
-
-function median(xs: number[]): number | null {
-  if (xs.length === 0) return null
-  const s = [...xs].sort((a, b) => a - b)
-  const mid = Math.floor(s.length / 2)
-  const lo = s[mid - 1]
-  const hi = s[mid]
-  if (lo === undefined || hi === undefined) return null
-  return s.length % 2 === 1 ? hi : (lo + hi) / 2
-}
-
-const fmt = (x: number | null, digits = 2): string =>
-  x === null ? '—' : x.toFixed(digits)
-
-/** "arithmetic 0.22 / 7.94" style quote of one arm's values on named rows. */
-function valuesOn(t: Table5, key: string, labels: string[]): string {
-  return labels
-    .map((l) => {
-      const row = t.rows.find((r) => r.label === l)
-      return row ? `${l} ${fmt(cellOf(t, row, key))}` : null
-    })
-    .filter((s): s is string => s !== null)
-    .join(', ')
-
-}
-
-/** The lowest kUsed seen in a column, for the ensemble caveat. */
-function minSeeds(t: Table5, key: string): number {
-  let k = Infinity
-  for (const row of t.rows) {
-    const cell = cellOf2(t, row, key)
-    if (cell) k = Math.min(k, cell)
-  }
-  return Number.isFinite(k) ? k : 0
-}
-
-function cellOf2(t: Table5, row: Table5Row, key: string): number | null {
-  const i = t.columns.findIndex((c) => c.key === key)
-  if (i < 0) return null
-  return row.cells[i]?.kUsed ?? null
-}
-
+/** Everything the verdict quotes is derived in @/lib/reward; see compareArms. */
 function Verdict({ t }: { t: Table5 }) {
   const negate = compareArms(t, 'negate', 'none')
   const shuffle = compareArms(t, 'shuffle', 'none')
@@ -645,23 +501,11 @@ function Verdict({ t }: { t: Table5 }) {
   const signed = compareArms(t, 'signed', 'none')
   const uniform = compareArms(t, 'uniform', 'none')
 
-  const total = t.rows.length
-  const labels = (xs: [string, number][]): string[] => xs.map(([l]) => l)
-  const ratios = (xs: [string, number][]): number[] => xs.map(([, r]) => r)
-
-  const negateAboveInit = t.rows.filter((r) => {
-    const v = cellOf(t, r, 'negate')
-    return v !== null && v > UNIFORM_256_BPB
-  })
-  const negateAtOrBelowInit = t.rows
-    .filter((r) => {
-      const v = cellOf(t, r, 'negate')
-      return v !== null && v <= UNIFORM_256_BPB
-    })
-    .map((r) => r.label)
-
-  const uniformRandRow = t.rows.find((r) => r.key === 'aitdcc_d_glibc_rand')
-  const noneBest = t.rows.filter((r) => r.bestIndex === 0).length
+  // Denominators are the rows where the arm in question is actually scored,
+  // not rows.length: an unscored row is not evidence either way. On this bundle
+  // every arm is scored on every row, so all of these read 10.
+  const negateAbove = splitAbove(t, 'negate', UNIFORM_256_BPB)
+  const noneBest = canonicalBestCount(t)
   const lossDeltaSeeds = minSeeds(t, 'loss_delta')
 
   return (
@@ -675,14 +519,14 @@ function Verdict({ t }: { t: Table5 }) {
       <Claim reference="table5" also={['appF']}>
         <strong>The reward is not noise.</strong> Flipping its sign (
         <code>negate</code>) lands above the {UNIFORM_256_BPB} bits/byte of a
-        uniform-over-256-bytes predictor on {negateAboveInit.length} of {total}{' '}
-        datasets, and is worse than the canonical reward on{' '}
-        {negate.worse.length} of {total} — median{' '}
+        uniform-over-256-bytes predictor on {negateAbove.above.length} of{' '}
+        {scoredRowCount(t, 'negate')} datasets, and is worse than the canonical
+        reward on {negate.worse.length} of {negate.scored} — median{' '}
         {fmt(median(ratios(negate.worse)))}× the canonical loss. A reward whose
         sign does not matter could not produce that. The one dataset where the 8.0
-        comparison fails is {valuesOn(t, 'negate', negateAtOrBelowInit)}, and
+        comparison fails is {valuesOn(t, 'negate', negateAbove.atOrBelow)}, and
         even there it sits far above the canonical arm on the same dataset (
-        {valuesOn(t, 'none', negateAtOrBelowInit)}) — only the comparison against
+        {valuesOn(t, 'none', negateAbove.atOrBelow)}) — only the comparison against
         the untrained reference fails.
       </Claim>
 
@@ -690,7 +534,7 @@ function Verdict({ t }: { t: Table5 }) {
         <strong>The pairing matters, not just the reward distribution.</strong>{' '}
         <code>shuffle</code> preserves the set of reward values and destroys only
         the correspondence between a program and its reward. It is worse than
-        the canonical arm on {shuffle.worse.length} of {total} rows
+        the canonical arm on {shuffle.worse.length} of {shuffle.scored} rows
         {shuffle.ties.length > 0 && (
           <>
             {' '}(and ties it on {shuffle.ties.length}:{' '}
@@ -708,7 +552,7 @@ function Verdict({ t }: { t: Table5 }) {
       <Claim reference="table5" also={['appF']}>
         <strong>Averaging over a longer block helps.</strong> The one-step window{' '}
         <code>last_step</code> is worse than the ⌊e/2⌋ lookback on all{' '}
-        {lastStep.worse.length} of {total} rows, median{' '}
+        {lastStep.worse.length} of {lastStep.scored} rows, median{' '}
         {fmt(median(ratios(lastStep.worse)))}× (arithmetic{' '}
         {valuesOn(t, 'last_step', ['arithmetic'])} vs{' '}
         {valuesOn(t, 'none', ['arithmetic'])}). So the improvement the design
@@ -722,7 +566,8 @@ function Verdict({ t }: { t: Table5 }) {
         <strong>The first-order score beats the finite difference.</strong>{' '}
         <code>loss_delta</code> uses realised progress{' '}
         <code>L(θ_pre) − L(θ_post)</code> and is worse than{' '}
-        <code>last_step</code> on {lossDelta.worse.length} of {total} rows, median{' '}
+        <code>last_step</code> on {lossDelta.worse.length} of {lossDelta.scored}{' '}
+        rows, median{' '}
         {fmt(median(ratios(lossDelta.worse)))}×. With the caveat: this arm runs
         {lossDeltaSeeds} seeds rather than {t.K}, and it is one of the two bimodal
         arms. It rules the finite difference out at this rung, not in general.
@@ -731,14 +576,15 @@ function Verdict({ t }: { t: Table5 }) {
       <Claim caveat reference="table5" also={['appF']}>
         <strong>The absolute value is doing the least work of the six.</strong>{' '}
         <code>signed</code> is worse than the canonical reward on{' '}
-        {signed.worse.length} of {total} rows and better on {signed.notWorse.length}{' '}
+        {signed.worse.length} of {signed.scored} rows and better on{' '}
+        {signed.notWorse.length}{' '}
         ({valuesOn(t, 'signed', labels(signed.notWorse))} vs{' '}
         {valuesOn(t, 'none', labels(signed.notWorse))}), and on those rows the
         paper prints <code>signed</code> in bold as the row&apos;s best. The
         margin is thin — on melody (Mutopia) it is{' '}
         {valuesOn(t, 'signed', ['melody (Mutopia)'])} against{' '}
         {valuesOn(t, 'none', ['melody (Mutopia)'])}, under 0.01 bits/byte — and
-        that row rests on just {t.provenance?.corpora?.mutopia_melody_16th?.n_seq_used ?? 17}{' '}
+        that row rests on just {heldOutSeqs(t, 'mutopia_melody_16th', 17)}{' '}
         held-out sequences rather than the 256 the caption implies, which is
         exactly why the ensemble at this rung does not resolve it cleanly. The honest reading:
         the abs buys consistency across datasets rather than a large win, and the
@@ -749,7 +595,7 @@ function Verdict({ t }: { t: Table5 }) {
       <Claim reference="table5" also={['appF', 'sec2.2']}>
         <strong>The adaptive curriculum is the load-bearing component.</strong>{' '}
         Removing the generator (<code>uniform</code>) is worse than the canonical
-        arm on {uniform.worse.length} of {total} rows, median{' '}
+        arm on {uniform.worse.length} of {uniform.scored} rows, median{' '}
         {fmt(median(ratios(uniform.worse)))}×, and catastrophic where the
         learnable frontier is narrow: arithmetic{' '}
         {valuesOn(t, 'uniform', ['arithmetic'])} against{' '}
@@ -758,7 +604,7 @@ function Verdict({ t }: { t: Table5 }) {
         {valuesOn(t, 'none', ['melody (Mutopia)'])}. Where it is cheap — DNA and
         the 16-bit audio — the target is dense enough that random programs still
         teach something. On{' '}
-        {uniformRandRow ? uniformRandRow.label : 'random bytes'} it lands within
+        {rowLabel(t, 'aitdcc_d_glibc_rand', 'random bytes')} it lands within
         0.01 bits/byte of the canonical arm (
         {valuesOn(t, 'uniform', ['random bytes'])} vs{' '}
         {valuesOn(t, 'none', ['random bytes'])}), which is the correct behaviour:
@@ -770,7 +616,8 @@ function Verdict({ t }: { t: Table5 }) {
       <div className="claim claim--caveat">
         <p className="claim__text">
           <strong>Two limits worth keeping in view.</strong> The canonical arm is
-          the printed best on {noneBest} of {total} rows and near-best on the
+          the printed best on {noneBest} of {scoredRowCount(t, 'none')} rows and
+        near-best on the
           rest — a consistent winner, not a uniform one. And the table ranks seven
           runs of one small rung at one round: strong evidence that the canonical
           reward is the right choice here, weak evidence about how much each

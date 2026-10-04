@@ -16,32 +16,15 @@ import {
 import {
   ChartFrame, HoverReadout, Series, useTooltip, type TooltipPayload,
 } from '@/components/Chart'
-import { formatCompute, lossDomain, predictFit } from '@/lib/scales'
+import {
+  ARM_ORDER, MAX_RAW_POINTS, TIE_MARGIN, armTotals, compareArms, corpusGroups,
+  fitCurve, floorReading, formatCompute, groupVerdict, isTie, ladderFit,
+  literatureEntries, lossDomain, ordinal, paperExponent, amplitude,
+  sliceCorpus, subsample, subsampleStride, tallyGroups, type RawPoint,
+} from '@/lib/scaling'
 import type {
-  ArmKey, ArmScaling, CorpusScaling, Meta, Scaling,
+  ArmScaling, CorpusScaling, Meta, Scaling,
 } from '@/data/types'
-
-const ARM_ORDER: readonly ArmKey[] = ['selfplay', 'uniform', 'pcfg']
-
-/** Never draw more raw circles than this; stride-subsample beyond it. */
-/**
- * Every ladder corpus carries 1,490 rows, so a 1,500 cap would never fire and
- * the stride path in subsample would be unreachable. 1,400 keeps the scatter
- * readable AND leaves the stride branch live.
- */
-const MAX_RAW_POINTS = 1400
-
-/** Below this bits/byte gap the arms are not meaningfully separated. */
-const TIE_MARGIN = 0.05
-
-/** One scored ladder point, unpacked from the columnar arrays. */
-interface RawPoint {
-  c: number
-  bpb: number
-  n: number
-  k: number
-  round: number
-}
 
 /** Both bundles the page needs, fetched once and cached by the loaders. */
 function loadPage(): Promise<{ meta: Meta; scaling: Scaling }> {
@@ -49,168 +32,6 @@ function loadPage(): Promise<{ meta: Meta; scaling: Scaling }> {
     meta,
     scaling,
   }))
-}
-
-/**
- * Render an exponent at the paper's printed precision of three decimals.
- * Ties round toward zero, because the authors printed 0.260 for the audio
- * 8-bit fit of 0.2605 (docs/findings.md F-note); `tools/verify_data.py`
- * accepts both renderings with a half-ulp window.
- */
-function paperExponent(v: number): string {
-  const scaled = v * 1000
-  const floor = Math.floor(scaled)
-  return ((scaled - floor > 0.5 + 1e-9 ? floor + 1 : floor) / 1000).toFixed(3)
-}
-
-/** The loss-scale prefactor of L(C) = E + A*C^-b, at the paper's precision. */
-function amplitude(v: number): string {
-  if (!Number.isFinite(v)) return '—'
-  if (Math.abs(v) >= 1000) return v.toExponential(3)
-  if (Math.abs(v) >= 10) return v.toFixed(2)
-  return v.toFixed(3)
-}
-
-/**
- * One corpus's rows out of the columnar ladder. The rows are sorted by
- * (corpus, compute), so the target corpus occupies one contiguous run and the
- * scan stops as soon as it has passed it -- one pass over ~39k rows, no
- * intermediate arrays of 39k elements.
- */
-function sliceCorpus(ladder: ArmScaling, key: string): { rows: RawPoint[]; total: number } {
-  const target = ladder.stringTables.corpora.indexOf(key)
-  const rows: RawPoint[] = []
-  if (target < 0) return { rows, total: 0 }
-  const cols = ladder.columns
-  let total = 0
-  for (let i = 0; i < cols.ci.length; i += 1) {
-    const ci = cols.ci[i]
-    if (ci === undefined) continue
-    if (ci > target) break
-    if (ci !== target) continue
-    total += 1
-    const c = cols.C[i]
-    const bpb = cols.bpb[i]
-    const n = cols.N[i]
-    const k = cols.K[i]
-    const round = cols.round[i]
-    if (c === undefined || bpb === undefined || n === undefined
-      || k === undefined || round === undefined) continue
-    rows.push({ c, bpb, n, k, round })
-  }
-  return { rows, total }
-}
-
-/** Deterministic stride subsample, so the drawn point count is reproducible. */
-function subsample<T>(items: T[], cap: number): { kept: T[]; total: number } {
-  const total = items.length
-  if (total <= cap) return { kept: items, total }
-  const stride = Math.ceil(total / cap)
-  return { kept: items.filter((_, i) => i % stride === 0), total }
-}
-
-/**
- * Score the three arms at a compute budget they all reached, and say which is
- * lowest. Comparing `bestLoss` directly would be unfair: self-play runs to
- * ~10x the compute of the fixed-prior arm, so its frontier always ends lower.
- * Restricting every arm to the largest budget all three reached turns that
- * confound into the comparison.
- */
-interface ArmVerdict {
-  key: string
-  label: string
-  group: string
-  budget: number
-  best: Record<ArmKey, number | null>
-  winner: ArmKey | null
-  /** bits/byte between the winner and the runner-up; null if <2 arms scored. */
-  margin: number | null
-}
-
-function compareArms(scaling: Scaling, meta: Meta): ArmVerdict[] {
-  const out: ArmVerdict[] = []
-  for (const corpus of meta.corpora) {
-    if (corpus.group === 'excluded') continue
-    const frontiers = ARM_ORDER.map((arm) => ({
-      arm,
-      pts: scaling.arms[arm].corpora[corpus.key]?.frontier ?? [],
-    })).filter((a) => a.pts.length > 0)
-    if (frontiers.length < 2) continue
-    const budget = Math.min(...frontiers.map((a) => a.pts[a.pts.length - 1]?.[0] ?? Infinity))
-    const best = {} as Record<ArmKey, number | null>
-    for (const { arm, pts } of frontiers) {
-      const reachable = pts.filter((p) => p[0] <= budget * (1 + 1e-7))
-      best[arm] = reachable.length
-        ? Math.min(...reachable.map((p) => p[1]))
-        : null
-    }
-    const scored = ARM_ORDER.filter((a) => best[a] !== null)
-    const sorted = [...scored].sort((a, b) => (best[a] ?? 0) - (best[b] ?? 0))
-    const top = sorted[0]
-    const second = sorted[1]
-    out.push({
-      key: corpus.key,
-      label: corpus.paperLabel,
-      group: corpus.group,
-      budget,
-      best,
-      winner: top ?? null,
-      margin: top !== undefined && second !== undefined
-        ? (best[second] ?? 0) - (best[top] ?? 0)
-        : null,
-    })
-  }
-  return out
-}
-
-/** Win counts per corpus group, plus how many of those wins were near-ties. */
-interface GroupTally {
-  group: string
-  counts: Record<ArmKey, number>
-  total: number
-  ties: number
-}
-
-function tallyGroups(verdicts: ArmVerdict[]): GroupTally[] {
-  const order: string[] = []
-  const byGroup = new Map<string, GroupTally>()
-  for (const v of verdicts) {
-    let tally = byGroup.get(v.group)
-    if (!tally) {
-      tally = {
-        group: v.group,
-        counts: { selfplay: 0, uniform: 0, pcfg: 0 },
-        total: 0,
-        ties: 0,
-      }
-      byGroup.set(v.group, tally)
-      order.push(v.group)
-    }
-    tally.total += 1
-    if (v.winner) tally.counts[v.winner] += 1
-    if (v.margin !== null && v.margin < TIE_MARGIN) tally.ties += 1
-  }
-  return order.map((g) => byGroup.get(g)).filter((t): t is GroupTally => t !== undefined)
-}
-
-/** The verdict line, written from the tally rather than asserted by hand. */
-function groupVerdict(t: GroupTally, meta: Meta): string {
-  const entries = ARM_ORDER
-    .map((arm) => ({ arm, n: t.counts[arm], name: meta.arms[arm].short }))
-    .sort((a, b) => b.n - a.n)
-  const lead = entries[0]
-  if (!lead || lead.n === 0) return 'No arm reached the shared budget.'
-  const noun = t.total === 1 ? 'corpus' : 'corpora'
-  const share = `${lead.name} reaches the lowest loss on ${lead.n} of ${t.total} ${noun}`
-  const rest = entries.slice(1).filter((e) => e.n > 0)
-  const also = rest.length
-    ? `; ${rest.map((e) => `${e.name} on ${e.n}`).join(', ')}`
-    : ''
-  const tie = t.ties > 0
-    ? ` ${t.ties === 1 ? 'One of those is' : `${t.ties} of those are`} within `
-      + `${TIE_MARGIN} bits/byte — treat ${t.ties === 1 ? 'it' : 'those'} as a tie.`
-    : ''
-  return `${share}${also}.${tie}`
 }
 
 // ---------------------------------------------------------------------------
@@ -247,14 +68,7 @@ function ScalingExplorer({ meta, scaling }: { meta: Meta; scaling: Scaling }) {
   const selectedKey = corpus?.key ?? 'dclm'
   const cs = scaling.ladder.corpora[selectedKey]
 
-  const groups = useMemo(() => {
-    const seen: string[] = []
-    for (const c of meta.corpora) if (!seen.includes(c.group)) seen.push(c.group)
-    return seen.map((g) => ({
-      group: g,
-      items: meta.corpora.filter((c) => c.group === g),
-    }))
-  }, [meta])
+  const groups = useMemo(() => corpusGroups(meta), [meta])
 
   if (!corpus || !cs) {
     return <div className="error">The ladder bundle has no frontier for {selectedKey}.</div>
@@ -438,18 +252,7 @@ function FrontierChart({
   )
 
   const frontier = cs.frontier
-  const fitPoints = useMemo(() => {
-    if (!cs.fit || frontier.length < 2) return []
-    const lo = frontier[0]?.[0] ?? 0
-    const hi = frontier[frontier.length - 1]?.[0] ?? 0
-    if (!(lo > 0) || !(hi > lo)) return []
-    const out: [number, number][] = []
-    for (let i = 0; i <= 48; i += 1) {
-      const c = lo * Math.pow(hi / lo, i / 48)
-      out.push([c, predictFit(cs.fit, c)])
-    }
-    return out
-  }, [cs, frontier])
+  const fitPoints = useMemo(() => fitCurve(cs), [cs])
 
   const allC = kept.map((p) => p.c).concat(frontier.map((p) => p[0]))
   const allL = kept.map((p) => p.bpb).concat(frontier.map((p) => p[1]))
@@ -530,22 +333,18 @@ function FrontierChart({
         ]}
       />
       <p className="card__note" style={{ marginTop: 8 }}>
-        {kept.length === total
-          ? `All ${total.toLocaleString()} scored ladder points for this corpus are drawn.`
-          : `${kept.length.toLocaleString()} of ${total.toLocaleString()} scored ladder points drawn (every ${Math.ceil(total / kept.length)}${ordinal(Math.ceil(total / kept.length))} in compute order), capped at ${MAX_RAW_POINTS} circles.`}
+        {(() => {
+          const stride = subsampleStride(total)
+          return kept.length === total
+            ? `All ${total.toLocaleString()} scored ladder points for this corpus are drawn.`
+            : `${kept.length.toLocaleString()} of ${total.toLocaleString()} scored ladder points drawn (every ${stride}${ordinal(stride)} in compute order), capped at ${MAX_RAW_POINTS} circles.`
+        })()}
         {' '}Hover a point for its compute, loss, parameter count, ensemble size
         and round.
       </p>
       <HoverReadout payload={payload} />
     </>
   )
-}
-
-function ordinal(n: number): string {
-  if (n % 10 === 1 && n % 100 !== 11) return 'st'
-  if (n % 10 === 2 && n % 100 !== 12) return 'nd'
-  if (n % 10 === 3 && n % 100 !== 13) return 'rd'
-  return 'th'
 }
 
 function pointPayload(
@@ -574,7 +373,8 @@ function pointPayload(
 function FitCard({
   cs, label, meta,
 }: { cs: CorpusScaling; label: string; meta: Meta }) {
-  const fit = cs.fit
+  const fit = ladderFit(cs)
+  const reading = floorReading(cs)
   return (
     <Card
       title={`The fit for ${label}`}
@@ -600,7 +400,7 @@ function FitCard({
             natural data at any point. For {label} the fit puts it at{' '}
             {fit.floor.toFixed(3)} bits/byte, against a best measured loss of{' '}
             {cs.bestLoss.toFixed(3)} at C = {formatCompute(cs.maxCompute)}.{' '}
-            {(cs.bestLoss < fit.floor || fit.floor === 0) ? (
+            {(reading === 'broken-down') ? (
               <>
                 {' '}Note that the best measurement is <em>below</em> the fitted
                 floor, or the floor itself pinned at zero: on this corpus the
@@ -643,14 +443,11 @@ function FitCard({
  * convert them again.
  */
 function literatureCell(scaling: Scaling, key: string) {
-  const row = scaling.exponents.find((e) => e.key === key)
-  if (!row) return null
-  const entries = [
-    ...row.literatureValues.map((v) => ({ v, derived: false })),
-    ...row.literatureChinchilla.map((v) => ({ v, derived: true })),
-  ].sort((a, b) => a.v - b.v)
+  const cell = literatureEntries(scaling, key)
+  if (!cell) return null
+  const { entries, dash } = cell
   if (entries.length === 0) {
-    return row.literatureDash ? (
+    return dash ? (
       <span className="pill">— none found</span>
     ) : (
       <span style={{ color: 'var(--text-faint)' }}>—</span>
@@ -764,14 +561,7 @@ function ArmChart({
 function ArmVerdicts({ scaling, meta }: { scaling: Scaling; meta: Meta }) {
   const verdicts = useMemo(() => compareArms(scaling, meta), [scaling, meta])
   const tallies = useMemo(() => tallyGroups(verdicts), [verdicts])
-  const totals = ARM_ORDER.reduce(
-    (acc, arm) => {
-      acc[arm] = verdicts.filter((v) => v.winner === arm).length
-      return acc
-    },
-    {} as Record<ArmKey, number>,
-  )
-  const tieCount = verdicts.filter((v) => v.margin !== null && v.margin < TIE_MARGIN).length
+  const { totals, ties: tieCount } = armTotals(verdicts)
 
   return (
     <>
@@ -808,7 +598,7 @@ function ArmVerdicts({ scaling, meta }: { scaling: Scaling; meta: Meta }) {
                   <td className="num">
                     {v.margin === null
                       ? '—'
-                      : v.margin < TIE_MARGIN
+                      : isTie(v.margin)
                         ? `${v.margin.toFixed(3)} (tie)`
                         : v.margin.toFixed(3)}
                   </td>
