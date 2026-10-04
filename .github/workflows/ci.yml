@@ -3,33 +3,50 @@
 # WHY THE PINS BELOW ARE LOAD-BEARING -- read before "upgrading" either one.
 #
 # `public/data/*.json` is a COMMITTED build product (see .gitignore and
-# .gitattributes). The `data` job proves it is byte-reproducible by running
-# tools/build_data.py and failing on any diff. That proof only holds on a
-# specific numeric stack:
+# .gitattributes). The `data` job proves it still comes out of the committed
+# builder. That proof depends on the numeric stack for two separate reasons,
+# and the second one cost us a red build:
 #
-#   * The power-law fits in public/data/scaling.json come from the authors'
-#     vendored scipy.optimize curve_fit / minimize. Those optimizers stop at a
-#     tolerance, not at the exact optimum, so the last bits of `amplitude` and
-#     `exponent` depend on the LAPACK/BLAS build behind the scipy wheel.
-#   * MEASURED HERE: with numpy==2.4.6 pinned, scipy 1.15.3 / 1.16.3 / 1.17.0
-#     each reproduce the committed bundle byte-for-byte, while scipy 1.18.1
-#     changes 116 float leaves in scaling.json (worst delta ~1.4e27 on values
-#     around 1e21 -- i.e. relative error only, but fatal to a byte diff).
-#   * So numpy is pinned because the bundle was generated with it, and scipy is
-#     pinned to 1.17.0 because that is the newest release that still reproduces
-#     the bundle. Bumping scipy will turn this job red. That red is the point:
-#     regenerate the bundle with `npm run data:build` and commit it deliberately
-#     rather than discovering drift later.
+# 1. SCIPY VERSION. The power-law fits in public/data/scaling.json come from the
+#    authors' vendored scipy.optimize curve_fit / minimize. Those optimizers
+#    stop at a tolerance, not at the exact optimum, so the trailing bits of
+#    `amplitude` and `exponent` depend on the LAPACK/BLAS build behind the
+#    scipy wheel. MEASURED: with numpy==2.4.6 pinned, scipy 1.15.3 / 1.16.3 /
+#    1.17.0 each reproduce the committed bundle byte-for-byte, while scipy
+#    1.18.1 moves 116 leaves by up to ~1.4e27 on values around 1e21 -- a
+#    relative delta of ~1.4e-6, which straddles the comparison tolerance below.
+#    So the scipy pin is not cosmetic; a bump makes this job flaky at best.
 #
-# Node is pinned to 24 (LTS) for the same class of reason: the build must not
-# drift because a runner image moved.
+# 2. CPU MICROARCHITECTURE. Pinning versions cannot fix this one. scipy's
+#    manylinux wheels bundle OpenBLAS, which picks a kernel at RUNTIME from the
+#    CPU's feature set, so two machines running identical wheels sum in
+#    different orders. The bundle was generated on a Sapphire Rapids Xeon
+#    (AVX-512); the ubuntu-24.04 runner has a different one, and the first CI
+#    run failed on exactly that: same builder, same pins, a handful of fitted
+#    amplitudes differing in the last few bits. Bit-identical output across two
+#    CPUs is a property of two identical CPUs, not of a correct build.
 #
-# HONEST STATUS: this workflow has never been executed on a GitHub runner -- it
-# was authored in an environment with no git remote and no Actions runner. The
-# shell commands inside it were each executed by hand against committed HEAD
-# (including the byte-reproducibility check, on Linux x86_64 / CPython 3.13 /
-# numpy 2.4.6 / scipy 1.17.0), but the workflow itself is UNVERIFIED until one
-# manual run on GitHub.
+# So the job does NOT demand byte equality. tools/diff_bundle.py compares the
+# rebuilt bundle to the committed one field by field and requires what is
+# actually portable: identical key sets, identical array lengths, and EXACTLY
+# equal strings and labels; only numeric leaves get a relative tolerance (1e-6
+# -- four orders of magnitude above observed CPU noise, far below any real
+# regression). It prints the worst delta on every run so the margin stays
+# visible instead of becoming a mystery.
+#
+# It also caps its own output. The bundle is written as single-line JSON --
+# scaling.json is ~6.2 MB on ONE line -- so a plain `git diff` turns a single
+# changed byte into a multi-megabyte log line, which is what made the first
+# failure unreadable. diff_bundle.py prints at most 12 findings as short
+# path/value lines instead.
+#
+# Node is pinned to 24 (LTS) so the build cannot drift because a runner image
+# moved.
+#
+# HONEST STATUS: the node job is confirmed green on a real runner. The data job
+# has run on a real runner exactly once and failed on point 2 above; the
+# tolerance-based gate has NOT yet been through a runner and must be confirmed
+# by the next push.
 
 name: CI
 
@@ -80,6 +97,13 @@ jobs:
     name: Verify data bundle and its reproducibility
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      # Not required for correctness -- diff_bundle.py is tolerance-based on
+      # purpose -- but single-threaded BLAS removes one more source of run-to-
+      # run variation and costs nothing here.
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -87,23 +111,26 @@ jobs:
         with:
           python-version: '3.13'
 
-      # Pinned exactly: no ranges, no constraints file. See the header comment --
-      # the reproducibility diff below is the check that these pins are right.
+      # Pinned exactly: no ranges, no constraints file. See the header --
+      # these pins are load-bearing, and the compare step below is the check
+      # that they are right.
       - name: Install numeric stack
         run: |
           python -m pip install --upgrade pip
           python -m pip install "numpy==2.4.6" "scipy==1.17.0"
 
       - name: Show resolved numeric stack
-        run: python -c "import numpy, scipy, sys; print(sys.version); print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
+        run: python -c "import numpy, scipy, sys; print(sys.version.split()[0], '| numpy', numpy.__version__, '| scipy', scipy.__version__)"
 
       - name: Verify committed bundle (165 assertions)
         run: python tools/verify_data.py
 
-      # The committed bundle must be byte-reproducible from the committed
-      # builder. A stale bundle, a drift-prone scipy, or a hand-edited JSON file
-      # all fail here.
-      - name: Rebuild bundle and fail on any diff
-        run: |
-          python tools/build_data.py
-          git diff --exit-code -- public/data
+      - name: Rebuild bundle
+        run: python tools/build_data.py
+
+      # The committed bundle must still come out of the committed builder: no
+      # structural change, no changed string or label, no numeric drift beyond
+      # 1e-6 relative. Replaces `git diff --exit-code`, which was unusable on
+      # a single-line 6 MB JSON file -- see the header.
+      - name: Compare rebuilt bundle against the committed one
+        run: python tools/diff_bundle.py
