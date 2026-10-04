@@ -279,6 +279,8 @@ function Interactive() {
         viewed={viewed}
         peak={peak}
         roundIdx={roundIdx}
+        programIdx={programIdx}
+        mode={mode}
         onSelectRound={setRoundIdx}
       />
 
@@ -496,12 +498,15 @@ function TermBreakdown({
  * always one scored pool rather than a variable jump.
  */
 function RoundScrubber({
-  res, viewed, peak, roundIdx, onSelectRound,
+  res, viewed, peak, roundIdx, programIdx, mode, onSelectRound,
 }: {
   res: SimResult
   viewed: RoundRecord | undefined
   peak: RoundRecord | undefined
   roundIdx: number | null
+  /** The pinned program, so this panel tracks the selection like the others. */
+  programIdx: number
+  mode: RewardMode
   onSelectRound: (i: number | null) => void
 }) {
   const n = res.rounds.length
@@ -509,7 +514,12 @@ function RoundScrubber({
   const current = roundIdx === null ? res.rounds.indexOf(viewed) : roundIdx
   const safe = current >= 0 ? current : 0
   const noise = noiseIndex(res.pool)
-  const d = viewed.programs[viewed.activeIndex]
+  // The SELECTED program, not the taught one. This read activeIndex, so the
+  // panel below the scrubber kept reporting arithmetic no matter what was
+  // pinned -- a per-round readout that ignored the reader's choice and read as
+  // stale rather than as a different measurement.
+  const d = viewed.programs[programIdx]
+  const taught = viewed.programs[viewed.activeIndex]
   const z = viewed.programs[noise]
 
   return (
@@ -558,24 +568,39 @@ function RoundScrubber({
         <span className="kv__v">{viewed.trainLossBpb.toFixed(3)} bits/byte</span>
         {d !== undefined && (
           <>
-            <span className="kv__k">taught program&rsquo;s cos</span>
+            <span className="kv__k">{res.pool[programIdx]?.label ?? 'selected program'}</span>
             <span className="kv__v">
+              cos{' '}
               <strong style={{ color: d.cos > 0.3 ? TEAL : d.cos < 0 ? WARN : MUTED }}>
                 {d.cos.toFixed(4)}
               </strong>
+              {' · '}r {rewardOf(d, mode).toExponential(2)}
             </span>
           </>
         )}
         {z !== undefined && (
           <>
-            <span className="kv__k">noise cos</span>
+            <span className="kv__k">uniform noise</span>
             <span className="kv__v">
+              cos{' '}
               <strong style={{ color: z.cos < 0 ? WARN : 'var(--text)' }}>{z.cos.toFixed(4)}</strong>
+              {' · '}r {rewardOf(z, mode).toExponential(2)}
             </span>
-            <span className="kv__k">noise ÷ taught</span>
+            <span className="kv__k">noise ÷ selected</span>
             <span className="kv__v">
-              {(rewardOf(z, 'abs') / (d === undefined || rewardOf(d, 'abs') === 0 ? 1e-30 : rewardOf(d, 'abs'))).toFixed(2)}
+              {(rewardOf(z, mode) / (d === undefined || rewardOf(d, mode) === 0 ? 1e-30 : rewardOf(d, mode))).toFixed(2)}
               &times;
+            </span>
+          </>
+        )}
+        {taught !== undefined && d !== undefined && viewed.activeIndex !== programIdx && (
+          <>
+            <span className="kv__k">taught program&rsquo;s cos</span>
+            <span className="kv__v">
+              <strong style={{ color: taught.cos > 0.3 ? TEAL : taught.cos < 0 ? WARN : MUTED }}>
+                {taught.cos.toFixed(4)}
+              </strong>
+              {' · '}for comparison
             </span>
           </>
         )}
