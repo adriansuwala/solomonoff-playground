@@ -13,6 +13,7 @@ import { useState } from 'react'
 import { loadTable5 } from '@/data/loaders'
 import { Async, Card, Claim, Disclosure, PaperRef } from '@/components/UI'
 import { ChartFrame } from '@/components/Chart'
+import { Math as MathBlock } from '@/components/Math'
 import type { Table5, Table5Row } from '@/data/types'
 import {
   FOOTNOTES, UNIFORM_256_BPB,
@@ -42,15 +43,29 @@ export function Reward() {
         <em>learning progress</em> — not for difficulty, not for novelty, not for
         entropy. With <code>e</code> the current self-play round:
       </p>
-      <div className="program" style={{ marginTop: 12 }}>
-        r_i = |⟨∇θ L(y_i; θ_now), P_e ⊙ δθ_e⟩|
-      </div>
+      <MathBlock
+        display
+        tex={String.raw`r_i = \left|\left\langle \nabla_\theta L(y_i;\theta_{\text{now}}),\, P_e \odot \delta\theta_e \right\rangle\right|`}
+      />
       <div className="kv" style={{ marginTop: 12 }}>
-        <span className="kv__k">δθ_e</span>
-        <span className="kv__v">θ_⌊e/2⌋ − θ_e</span>
-        <span className="kv__k">P_e</span>
-        <span className="kv__v">diag(sqrt(v̂_e) + ε), the AdamW step operator</span>
-        <span className="kv__k">L(y_i; θ)</span>
+        <span className="kv__k">
+          <MathBlock tex={String.raw`\delta\theta_e`} />
+        </span>
+        <span className="kv__v">
+          <MathBlock tex={String.raw`\theta_{\lfloor e/2 \rfloor} - \theta_e`} />
+        </span>
+        <span className="kv__k">
+          <MathBlock tex={String.raw`P_e`} />
+        </span>
+        <span className="kv__v">
+          <MathBlock
+            tex={String.raw`\operatorname{diag}(\sqrt{\hat{v}_e} + \varepsilon)`}
+          />
+          , the AdamW step operator
+        </span>
+        <span className="kv__k">
+          <MathBlock tex={String.raw`L(y_i;\theta)`} />
+        </span>
         <span className="kv__v">
           the learner&apos;s loss on the sequence <code>y_i</code> that program{' '}
           <code>i</code> emitted
@@ -70,7 +85,9 @@ export function Reward() {
           <thead>
             <tr>
               <th>what the program is</th>
-              <th>gradient at θ_now</th>
+              <th className="left">
+                gradient at <MathBlock tex={String.raw`\theta_{\text{now}}`} />
+              </th>
               <th>reward</th>
             </tr>
           </thead>
@@ -82,7 +99,10 @@ export function Reward() {
             </tr>
             <tr>
               <td>unlearnable structure</td>
-              <td className="num">large, not aligned with δθ_e</td>
+              <td className="num left">
+                large, not aligned with{' '}
+                <MathBlock tex={String.raw`\delta\theta_e`} />
+              </td>
               <td className="num">none</td>
             </tr>
             <tr>
@@ -103,9 +123,12 @@ export function Reward() {
         <PaperRef reference="sec2.2" inline />
       </p>
 
-      <h3 className="subhead">Why the absolute value, and why the ⌊e/2⌋ window</h3>
+      <h3 className="subhead">
+        Why the absolute value, and why the <MathBlock tex={String.raw`\lfloor e/2 \rfloor`} /> window
+      </h3>
       <p className="body">
-        The outer <code>|·|</code> makes the reward non-negative. Without it, a
+        The outer <MathBlock tex={String.raw`|\cdot|`} /> makes the reward
+        non-negative. Without it, a
         program whose gradient opposes recent motion earns a negative reward, so
         the generator would be paid to <em>produce</em> bytes that look learnable
         and push the wrong way — an instability the paper avoids by
@@ -117,13 +140,16 @@ export function Reward() {
         <PaperRef reference="eq2" also={['appF']} inline />
       </p>
       <p className="body">
-        The lookback window is not <code>θ_now</code> but <code>θ_⌊e/2⌋</code>,
+        The lookback window is not <MathBlock tex={String.raw`\theta_{\text{now}}`} /> but{' '}
+        <MathBlock tex={String.raw`\theta_{\lfloor e/2 \rfloor}`} />,
         the checkpoint from roughly the middle of the run so far. Measuring
         against a longer trajectory averages over short-term fluctuations — one
-        step&apos;s <code>δθ</code> is mostly noise for a given program — while
+        step&apos;s <MathBlock tex={String.raw`\delta\theta`} /> is mostly noise for a
+        given program — while
         the length of the window means a mistake made early stops counting
         against that program once the learner has genuinely moved past it. The
-        one-step window <code>θ<sub>e−1</sub></code> is the ablation that tests
+        one-step window <MathBlock tex={String.raw`\theta_{e-1}`} /> is the ablation
+        that tests
         exactly this choice.{' '}
         <PaperRef reference="sec2.2" also={['appF']} inline />
       </p>
@@ -551,7 +577,7 @@ function Verdict({ t }: { t: Table5 }) {
 
       <Claim reference="table5" also={['appF']}>
         <strong>Averaging over a longer block helps.</strong> The one-step window{' '}
-        <code>last_step</code> is worse than the ⌊e/2⌋ lookback on all{' '}
+        <code>last_step</code> is worse than the <MathBlock tex={String.raw`\lfloor e/2 \rfloor`} /> lookback on all{' '}
         {lastStep.worse.length} of {lastStep.scored} rows, median{' '}
         {fmt(median(ratios(lastStep.worse)))}× (arithmetic{' '}
         {valuesOn(t, 'last_step', ['arithmetic'])} vs{' '}
@@ -565,7 +591,7 @@ function Verdict({ t }: { t: Table5 }) {
       <Claim reference="table5" also={['appF']}>
         <strong>The first-order score beats the finite difference.</strong>{' '}
         <code>loss_delta</code> uses realised progress{' '}
-        <code>L(θ_pre) − L(θ_post)</code> and is worse than{' '}
+        <MathBlock tex={String.raw`L(\theta_{\text{pre}}) - L(\theta_{\text{post}})`} /> and is worse than{' '}
         <code>last_step</code> on {lossDelta.worse.length} of {lossDelta.scored}{' '}
         rows, median{' '}
         {fmt(median(ratios(lossDelta.worse)))}×. With the caveat: this arm runs

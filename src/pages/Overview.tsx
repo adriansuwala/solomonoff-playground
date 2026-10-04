@@ -11,6 +11,7 @@ import {
   Async, Card, Claim, Disclosure, Legend, PaperRef, Stat,
 } from '@/components/UI'
 import { ChartFrame, Series } from '@/components/Chart'
+import { Math as MathBlock } from '@/components/Math'
 import { lossDomain } from '@/lib/scales'
 
 const ARM_COLORS = {
@@ -46,11 +47,26 @@ export function Overview() {
       <Disclosure summary="The reward, formally (Equation 2)">
         <div className="kv">
           <span className="kv__k">reward</span>
-          <span className="kv__v">r_i = |⟨∇θ L(y_i; θ_now), P_e ⊙ δθ_e⟩|</span>
-          <span className="kv__k">δθ_e</span>
-          <span className="kv__v">θ_⌊e/2⌋ − θ_e</span>
-          <span className="kv__k">P_e</span>
-          <span className="kv__v">diag(sqrt(v̂_e) + ε), the AdamW step operator</span>
+          <span className="kv__v">
+            <MathBlock
+              tex={String.raw`r_i = \left|\left\langle \nabla_\theta L(y_i;\theta_{\text{now}}),\, P_e \odot \delta\theta_e \right\rangle\right|`}
+            />
+          </span>
+          <span className="kv__k">
+            <MathBlock tex={String.raw`\delta\theta_e`} />
+          </span>
+          <span className="kv__v">
+            <MathBlock tex={String.raw`\theta_{\lfloor e/2 \rfloor} - \theta_e`} />
+          </span>
+          <span className="kv__k">
+            <MathBlock tex={String.raw`P_e`} />
+          </span>
+          <span className="kv__v">
+            <MathBlock
+              tex={String.raw`\operatorname{diag}(\sqrt{\hat{v}_e} + \varepsilon)`}
+            />
+            , the AdamW step operator
+          </span>
         </div>
         <p className="body" style={{ marginTop: 10 }}>
           The preconditioner rescales each coordinate by its own running

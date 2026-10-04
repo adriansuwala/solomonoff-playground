@@ -477,7 +477,7 @@ function ExponentTable({ scaling }: { scaling: Scaling }) {
             <th>Group</th>
             <th>our b</th>
             <th>literature b</th>
-            <th style={{ textAlign: 'left' }}>reference</th>
+            <th className="left">reference</th>
           </tr>
         </thead>
         <tbody>
@@ -494,7 +494,7 @@ function ExponentTable({ scaling }: { scaling: Scaling }) {
                   {r.alpha === null ? '—' : paperExponent(r.alpha)}
                 </td>
                 <td className="num">{literatureCell(scaling, r.key)}</td>
-                <td style={{ textAlign: 'left', color: 'var(--text-faint)' }}>
+                <td className="left" style={{ color: 'var(--text-faint)' }}>
                   {r.refs.length ? r.refs.join('; ') : '—'}
                 </td>
               </tr>

@@ -11,206 +11,34 @@
  * Where the shipped expansion contradicts its own stated effect -- it does, for
  * `X` -- the interpreter uses the shipped expansion and the page says so.
  * See the caveat under the program-space table.
+ *
+ * The machine itself lives in @/lib/bf, not here. The explorer's stepper and
+ * the run-to-completion path are two callers of one `stepMachine`, and a test
+ * cannot import a page module without dragging React and the KaTeX stylesheet
+ * into a node-environment test run. This page re-exports the interpreter's
+ * surface, so anything that reached for it here still finds it.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { loadMeta } from '@/data/loaders'
 import type { BfMacro, Meta } from '@/data/types'
 import {
   Async, Card, Claim, Disclosure, Legend, PaperRef, Stat,
 } from '@/components/UI'
 import { ChartFrame, Series } from '@/components/Chart'
+// Aliased: a component named `Math` shadows the global in every type position,
+// which TS then rejects as a JSX element type.
+import { Math as MathBlock } from '@/components/Math'
+import {
+  MAX_STEPS, PRESETS, TAPE, WINDOW, compileProgram, drive, finalize,
+  initialState, isDone, sourceIndexOfPc, stepMachine, type MachineState,
+} from '@/lib/bf'
 
-// ---------------------------------------------------------------------------
-// Interpreter
-// ---------------------------------------------------------------------------
-
-/** Circular tape. The paper's cell modulus is 256; the tape is our choice. */
-const TAPE = 256
-/** Guard against a program that loops without emitting. */
-const MAX_STEPS = 300_000
-/** Characters rendered in the tape strip. */
-const WINDOW = 32
-
-export interface BfRun {
-  /** Exactly `T` bytes: the emitted prefix, zero-padded. */
-  out: number[]
-  /**
-   * Bytes the program actually emitted, before zero-padding. `out.length` is
-   * always T, so it cannot answer "how much did this program produce"; this
-   * can. Equals `out.length` for a program that fills the window.
-   */
-  emitted: number
-  tape: number[]
-  head: number
-  steps: number
-  halted: boolean
-  /** True when the step guard stopped the program before T bytes came out. */
-  stepLimited: boolean
-  expanded: string
-  unmatched: number
-}
-
-/** Expand the macro alphabet into plain Brainfuck. Table 4, verbatim. */
-export function expandMacros(src: string, macros: BfMacro[]): string {
-  const table = new Map(macros.map((m) => [m.token, m.expansion]))
-  let out = ''
-  for (const ch of src) out += table.get(ch) ?? ch
-  return out
-}
-
-/** Bracket pairs. Unmatched brackets are left unmapped and become no-ops. */
-function matchBrackets(code: string): { pairs: Map<number, number>; unmatched: number } {
-  const open: number[] = []
-  const pairs = new Map<number, number>()
-  for (let i = 0; i < code.length; i += 1) {
-    const c = code[i]
-    if (c === '[') open.push(i)
-    else if (c === ']') {
-      const j = open.pop()
-      if (j !== undefined) {
-        pairs.set(j, i)
-        pairs.set(i, j)
-      }
-    }
-  }
-  // `open` holds brackets that opened but never closed; `closePairs` counts
-  // closers that found an empty stack. Both become no-ops at runtime.
-  return { pairs, unmatched: open.length + closePairs(code) }
-}
-
-/** Number of `]` that close nothing, i.e. that never had an open `[`. */
-function closePairs(code: string): number {
-  let depth = 0
-  let n = 0
-  for (const c of code) {
-    if (c === '[') depth += 1
-    else if (c === ']') {
-      if (depth > 0) depth -= 1
-      else n += 1
-    }
-  }
-  return n
-}
-
-/**
- * A seeded LCG for `,`. Deterministic so the reader can reproduce a byte; the
- * paper only says the byte is uniform, not how it is drawn.
- */
-function nextRandom(state: number): [number, number] {
-  const s = (state * 1664525 + 1013904223) >>> 0
-  return [s, (s >>> 16) & 255]
-}
-
-export function runBrainfuck(
-  src: string, t: number, seed: number, macros: BfMacro[],
-): BfRun {
-  const expanded = expandMacros(src, macros)
-  const { pairs, unmatched } = matchBrackets(expanded)
-  const code = expanded
-  const tape = new Array<number>(TAPE).fill(0)
-  const out: number[] = []
-  let head = 0
-  let pc = 0
-  let steps = 0
-  let rng = (seed >>> 0) || 1
-
-  while (pc < code.length && out.length < t && steps < MAX_STEPS) {
-    const c = code[pc]
-    if (c === '>') { head = (head + 1) % TAPE; pc += 1 } else if (c === '<') { head = (head - 1 + TAPE) % TAPE; pc += 1 } else if (c === '+') { tape[head] = ((tape[head] ?? 0) + 1) % 256; pc += 1 } else if (c === '-') { tape[head] = ((tape[head] ?? 0) + 255) % 256; pc += 1 } else if (c === '.') { out.push(tape[head] ?? 0); pc += 1 } else if (c === ',') { const r = nextRandom(rng); rng = r[0]; tape[head] = r[1]; pc += 1 } else if (c === '[') { pc = tape[head] === 0 ? ((pairs.get(pc) ?? pc) + 1) : pc + 1 } else if (c === ']') { const open = pairs.get(pc); pc = open !== undefined && tape[head] !== 0 ? open + 1 : pc + 1 } else { pc += 1 }
-    steps += 1
-  }
-
-  const padded = out.slice(0, t)
-  while (padded.length < t) padded.push(0)
-
-  return {
-    out: padded,
-    emitted: Math.min(out.length, t),
-    tape,
-    head,
-    steps,
-    halted: pc >= code.length,
-    stepLimited: out.length < t && steps >= MAX_STEPS,
-    expanded: code,
-    unmatched,
-  }
-}
-
-
-
-// ---------------------------------------------------------------------------
-// Presets
-// ---------------------------------------------------------------------------
-
-interface Preset {
-  label: string
-  program: string
-  seed: number
-  /** What the paper says this family emits. */
-  paperTerms: string
-  reference: 'sec2.1' | 'table1'
-  note: string
-}
-
-/**
- * The paper's own example programs. Seeds are chosen so that `,` draws the byte
- * the paper's stated term list starts from; they are ours, not the paper's.
- */
-const PRESETS: Preset[] = [
-  {
-    label: 'Our worked example',
-    program: '+++[>+.<-]',
-    seed: 1,
-    paperTerms: '1, 2, 3, 0, 0, 0, …',
-    reference: 'sec2.1',
-    note:
-      'Ten characters. The head sweeps right three times, and the cell it left '
-      + 'behind is what gets emitted, so the emitted bytes count up to three '
-      + 'and the program halts in 22 steps.',
-  },
-  {
-    label: 'Arithmetic, mod 256',
-    program: '+[.++]',
-    seed: 1,
-    paperTerms: '1, 3, 5, 7, 9, …',
-    reference: 'table1',
-    note:
-      'The loop never halts: each pass emits, then adds two to the cell it is '
-      + 'reading. Output length is bounded only by the context window T.',
-  },
-  {
-    label: 'Geometric, mod 256',
-    program: '+[.L>]',
-    seed: 1,
-    paperTerms: '1, 3, 9, 27, 81, …',
-    reference: 'table1',
-    note:
-      'Six characters, using the L macro. Each pass clears the cell, triples it '
-      + 'into its right neighbour and moves the head there. At 243 the sequence '
-      + 'wraps mod 256 and stops looking like a geometric progression — which is '
-      + 'exactly the arithmetical structure the paper scores.',
-  },
-  {
-    label: 'Fibonacci, mod 256',
-    program: ',[[.C>.C>]',
-    seed: 36,
-    paperTerms: '1, 1, 2, 3, 5, 8, …',
-    reference: 'table1',
-    note:
-      'Two accumulator cells, written together by the C macro. The first byte '
-      + 'drawn is whatever `,` returns, so the whole sequence scales with it.',
-  },
-  {
-    label: 'Quadratic — read the caveat',
-    program: ',.[<C>>VX<RX++]',
-    seed: 248,
-    paperTerms: '9, 25, 59, 111, …',
-    reference: 'table1',
-    note:
-      'This one does not reproduce under the macro table as shipped. See the '
-      + 'caveat below the program-space table.',
-  },
-]
+// Re-exported so the interpreter keeps answering to the page it grew out of.
+export {
+  PRESETS, compileProgram, drive, expandMacros, finalize, initialState, isDone,
+  runBrainfuck, sourceIndexOfPc, stepMachine, TAPE, WINDOW,
+  type BfProgram, type BfRun, type MachineState, type Preset,
+} from '@/lib/bf'
 
 // ---------------------------------------------------------------------------
 // Page
@@ -305,13 +133,13 @@ function MethodBody({ meta }: { meta: Meta }) {
         <div className="table-wrap">
           <table className="data">
             <thead>
-              <tr><th>token</th><th>effect</th></tr>
+              <tr><th className="left">token</th><th className="left">effect</th></tr>
             </thead>
             <tbody>
               {primitives.map((p) => (
                 <tr key={p.token}>
                   <td className="num">{p.token}</td>
-                  <td style={{ textAlign: 'left' }}>{p.effect}</td>
+                  <td className="left">{p.effect}</td>
                 </tr>
               ))}
             </tbody>
@@ -334,14 +162,14 @@ function MethodBody({ meta }: { meta: Meta }) {
         <div className="table-wrap">
           <table className="data">
             <thead>
-              <tr><th>token</th><th>expansion</th><th>effect</th></tr>
+              <tr><th className="left">token</th><th className="left">expansion</th><th className="left">effect</th></tr>
             </thead>
             <tbody>
               {macros.map((m) => (
                 <tr key={m.token}>
                   <td className="num" style={{ color: '#f0883e' }}>{m.token}</td>
-                  <td className="num" style={{ textAlign: 'left' }}>{m.expansion}</td>
-                  <td style={{ textAlign: 'left' }}>{m.effect}</td>
+                  <td className="num left">{m.expansion}</td>
+                  <td className="left">{m.effect}</td>
                 </tr>
               ))}
             </tbody>
@@ -413,18 +241,19 @@ function MethodBody({ meta }: { meta: Meta }) {
 
       <h2 className="section">The objectives</h2>
       <p className="body">
-        Five terms, in the order they act. Rendered as text rather than typeset;
-        the notation is ours, and equations 3 to 5 are reconstructions rather
-        than transcriptions.
+        Five terms, in the order they act. Typeset with KaTeX; the notation is
+        ours, and equations 3 to 5 are reconstructions rather than
+        transcriptions.
       </p>
 
       <Card
         title="Equation 1 — the learner’s loss"
         note="Ordinary next-byte cross-entropy on the emitted sequence. No natural data enters here, at any round."
       >
-        <div className="program">
-          L(θ) = −(1/T) · Σ[ t = 1..T ] log p_θ( y_t | y_&lt;t )
-        </div>
+        <MathBlock
+          display
+          tex={String.raw`L(\theta) = -\frac{1}{T}\sum_{t=1}^{T}\log p_\theta\!\left(y_t \mid y_{<t}\right)`}
+        />
         <p className="body" style={{ marginTop: 10 }}>
           A single gradient step on one program’s bytes. Repeated across the
           pool, this is the whole of the learner’s training.{' '}
@@ -436,11 +265,14 @@ function MethodBody({ meta }: { meta: Meta }) {
         title="Equation 2 — the reward"
         note="The magnitude of the preconditioned gradient inner product against the learner’s recent displacement."
       >
-        <div className="program">
-          r_i = | ⟨ ∇_θ L(y_i; θ_now) , P_e ⊙ δθ_e ⟩ |
-          <br />
-          δθ_e = θ_⌊e/2⌋ − θ_e  ,  P_e = diag( sqrt(v̂_e) + ε )
-        </div>
+        <MathBlock
+          display
+          tex={String.raw`r_i = \left|\left\langle \nabla_\theta L(y_i;\theta_{\text{now}}),\, P_e \odot \delta\theta_e \right\rangle\right|`}
+        />
+        <MathBlock
+          display
+          tex={String.raw`\delta\theta_e = \theta_{\lfloor e/2 \rfloor} - \theta_e, \qquad P_e = \operatorname{diag}\!\left(\sqrt{\hat{v}_e} + \varepsilon\right)`}
+        />
         <p className="body" style={{ marginTop: 10 }}>
           Read it as: how big a step would this program’s gradient have produced,
           taken in the direction the learner has actually been moving. Mastered
@@ -456,11 +288,14 @@ function MethodBody({ meta }: { meta: Meta }) {
         title="Equation 3 — the generator’s RL objective"
         note="Reconstruction, not a transcription. The released artefacts do not contain this formula; see the note below."
       >
-        <div className="program">
-          J(φ) = E_x[ (r(x)/β) · log( g_φ(x) / g_0(x) ) ] − β · KL( g_φ ‖ g_0 )
-          <br />
-          g_0(x) = |A|^( −len(x) )   with |A| = alphabet size
-        </div>
+        <MathBlock
+          display
+          tex={String.raw`J(\phi) = \mathbb{E}_x\!\left[\frac{r(x)}{\beta}\log\frac{g_\phi(x)}{g_0(x)}\right] - \beta\, \mathrm{KL}\!\left(g_\phi \| g_0\right)`}
+        />
+        <MathBlock
+          display
+          tex={String.raw`g_0(x) = |A|^{-\mathrm{len}(x)}, \qquad |A| = \text{alphabet size}`}
+        />
         <p className="body" style={{ marginTop: 10 }}>
           <code>g_0</code> is the length-prior over the program alphabet — the
           fixed uniform-prior arm is exactly <code>g_0</code> with the generator
@@ -482,9 +317,10 @@ function MethodBody({ meta }: { meta: Meta }) {
         title="Equation 4 — the GRPO advantage"
         note="Rewards are normalised within the pool, so the step size does not drift as the reward scale changes across rounds."
       >
-        <div className="program">
-          Â_i = ( r_i − mean_j r_j ) / ( std_j r_j + ε )
-        </div>
+        <MathBlock
+          display
+          tex={String.raw`\hat{A}_i = \frac{r_i - \mathrm{mean}_j r_j}{\mathrm{std}_j r_j + \varepsilon}`}
+        />
         <p className="body" style={{ marginTop: 10 }}>
           Group-relative: the comparison is always against the other programs in
           the same pool, never against an absolute scale.{' '}
@@ -502,20 +338,25 @@ function MethodBody({ meta }: { meta: Meta }) {
         title="Equation 5 — expert iteration"
         note="Reconstruction, not a transcription. See the note below."
       >
-        <div className="program">
-          L_SFT(φ) = − E_x~g_φ [ w(x) · log g_φ(x) ],  w(x) ∝ max( 0, r(x) − τ )
-        </div>
+        <MathBlock
+          display
+          tex={String.raw`\mathcal{L}_{\mathrm{SFT}}(\phi) = -\,\mathbb{E}_{x \sim g_\phi}\!\left[w(x)\log g_\phi(x)\right], \qquad w(x) \propto \max\left(0,\ r(x) - \tau\right)`}
+        />
         <p className="body" style={{ marginTop: 10 }}>
           This is the term that makes the loop self-reinforcing rather than purely
           exploratory: programs that paid once get imitated.{' '}
           <PaperRef reference="eq5" also={['sec2.2']} inline />
         </p>
         <p className="card__note">
-          Note the parameterisation: <code>L_SFT(φ)</code> is a loss over the{' '}
-          <em>generator</em> g_φ, not over the learner, even though it is
+          Note the parameterisation:{' '}
+          <MathBlock tex={String.raw`\mathcal{L}_{\mathrm{SFT}}(\phi)`} /> is a
+          loss over the{' '}
+          <em>generator</em> <MathBlock tex={String.raw`g_\phi`} />, not over the
+          learner, even though it is
           supervised fine-tuning — the generator is being trained to imitate its
           own high-reward programs. The threshold form is our rendering; no
-          released artefact fixes τ or the exact weight.
+          released artefact fixes <MathBlock tex={String.raw`\tau`} /> or the exact
+          weight.
         </p>
       </Card>
 
@@ -577,21 +418,91 @@ function MethodBody({ meta }: { meta: Meta }) {
 // Explorer
 // ---------------------------------------------------------------------------
 
+/**
+ * Instructions retired per animation frame. One is the only rate at which a
+ * ten-character program is legible, and 1024 is the rate at which a 4,095-byte
+ * one finishes before the reader has decided they wanted to see it. The middle
+ * settings exist because the interesting programs sit between those.
+ */
+const SPEEDS = [1, 8, 64, 1024]
+
 function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: number }) {
   const [program, setProgram] = useState(PRESETS[0]?.program ?? '+++[>+.<-]')
   const [seed, setSeed] = useState(PRESETS[0]?.seed ?? 1)
   const [t, setT] = useState(48)
+  const [speed, setSpeed] = useState(8)
 
-  const run = useMemo(
-    () => runBrainfuck(program, t, seed, macros),
-    [program, seed, t, macros],
+  /**
+   * `live === null` means "not animating", and the explorer then renders the
+   * finished run -- which is what this page did before there was a stepper, and
+   * is the right default: someone arriving here wants the emitted sequence, not
+   * a machine to watch. Rewinding sets a state, and from then on the tape,
+   * the cursor and the step counter follow it instead of the end state.
+   */
+  const [live, setLive] = useState<MachineState | null>(null)
+  const [playing, setPlaying] = useState(false)
+
+  const prog = useMemo(() => compileProgram(program, macros), [program, macros])
+  const end = useMemo(
+    () => finalize(prog, drive(prog, initialState(seed), t), t),
+    [prog, seed, t],
   )
+
+  const view = live === null ? end : finalize(prog, live, t)
   const active = PRESETS.find((p) => p.program === program) ?? null
+  const cursor = live === null ? null : sourceIndexOfPc(prog, live.pc)
+
+  // Editing the program while a replay is on screen rewinds the new program to
+  // its first instruction rather than leaving a cursor pointing into code that
+  // no longer exists. With no replay engaged there is nothing to rewind.
+  useEffect(() => {
+    setLive((prev) => (prev === null ? null : initialState(seed)))
+  }, [prog, t, seed])
+
+  // The frame loop. Everything it reads is in the dependency list, so the
+  // cleanup runs on every change -- which is also what makes it safe under
+  // StrictMode, where React mounts, tears down and mounts again.
+  useEffect(() => {
+    if (!playing) return
+    let raf = requestAnimationFrame(function tick() {
+      // Functional update: the frame callback must not close over the state
+      // from the render that scheduled it, or the replay runs at one step.
+      setLive((prev) => drive(prog, prev ?? initialState(seed), t, speed))
+      raf = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [playing, prog, t, seed, speed])
+
+  // Stop on arrival. Kept out of the frame callback: setState inside another
+  // setState's updater is a side effect in the render phase, and React is
+  // within its rights to call that updater twice.
+  useEffect(() => {
+    if (playing && live !== null && isDone(prog, live, t)) setPlaying(false)
+  }, [playing, live, prog, t])
+
+  const rewind = (): void => {
+    setPlaying(false)
+    setLive(initialState(seed))
+  }
+  const stepOnce = (): void => {
+    setPlaying(false)
+    setLive((prev) => {
+      const s = prev ?? initialState(seed)
+      return isDone(prog, s, t) ? s : stepMachine(prog, s)
+    })
+  }
+  const toggle = (): void => {
+    // Pressing play from the finished state means "show me the run", so it
+    // starts from the first instruction rather than resuming at the end.
+    if (live === null || isDone(prog, live, t)) setLive(initialState(seed))
+    setPlaying((p) => !p)
+  }
 
   // Tape window centred a little left of the head so the accumulators a program
   // has already walked past stay visible.
-  const start = (run.head - 6 + TAPE * 2) % TAPE
+  const start = (view.head - 6 + TAPE * 2) % TAPE
   const cells = Array.from({ length: WINDOW }, (_, k) => (start + k) % TAPE)
+  const animating = live !== null
 
   return (
     <Card
@@ -638,21 +549,44 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
             onChange={(e) => setSeed(Math.max(0, Number(e.target.value) || 0))}
           />
         </label>
+        <label className="field">
+          <span className="field__label">speed</span>
+          <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+            {SPEEDS.map((s) => (
+              <option key={s} value={s}>{s} step{s === 1 ? '' : 's'}/frame</option>
+            ))}
+          </select>
+        </label>
         <div className="field">
           <span className="field__label">expansion</span>
           <code style={{ fontSize: 12, color: 'var(--text-faint)' }}>
-            {run.expanded.length} chars
+            {end.expanded.length} chars
           </code>
         </div>
       </div>
 
+      <div className="row row--tight" style={{ marginBottom: 10 }}>
+        <button onClick={toggle} aria-pressed={playing} title="Run the machine forward from the current instruction">
+          {playing ? 'Pause' : 'Play'}
+        </button>
+        <button onClick={stepOnce} disabled={live !== null && isDone(prog, live, t)} title="Execute one instruction">
+          Step
+        </button>
+        <button onClick={rewind} title="Back to the instruction before the first">Rewind</button>
+        <span className="card__note" style={{ margin: 0 }}>
+          {animating
+            ? `${playing ? 'running' : 'paused'} · instruction ${cursor === null ? '—' : cursor + 1} of ${[...program].length} · ${live.steps.toLocaleString()} steps executed`
+            : 'showing the finished run'}
+        </span>
+      </div>
+
       <h3 className="subhead">Emitted bytes</h3>
-      <ProgramView src={program} macros={macros} />
+      <ProgramView src={program} macros={macros} cursor={cursor} />
       <div className="program" style={{ marginTop: 6 }}>
-        {run.out.map((b, i) => (
+        {view.out.map((b, i) => (
           <span key={i} style={{ color: b === 0 ? 'var(--text-faint)' : 'var(--text)' }}>
             {b}
-            {i < run.out.length - 1 ? ' ' : ''}
+            {i < view.out.length - 1 ? ' ' : ''}
           </span>
         ))}
       </div>
@@ -663,7 +597,7 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
       </p>
 
       <h3 className="subhead">Byte value by position</h3>
-      <ByteChart out={run.out} />
+      <ByteChart out={view.out} />
       <Legend
         items={[
           { label: 'emitted byte', color: 'var(--arm-selfplay)' },
@@ -683,26 +617,26 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
             key={i}
             className={[
               'tape__cell',
-              i === run.head ? 'tape__cell--head' : '',
-              (run.tape[i] ?? 0) === 0 ? 'tape__cell--zero' : '',
+              i === view.head ? 'tape__cell--head' : '',
+              (view.tape[i] ?? 0) === 0 ? 'tape__cell--zero' : '',
             ].filter(Boolean).join(' ')}
-            title={`cell ${i} = ${run.tape[i] ?? 0}`}
+            title={`cell ${i} = ${view.tape[i] ?? 0}`}
           >
-            {run.tape[i] ?? 0}
+            {view.tape[i] ?? 0}
           </div>
         ))}
       </div>
 
       <div className="grid-3" style={{ marginTop: 16 }}>
-        <Stat value={run.emitted} label={`bytes emitted of ${run.out.length} shown`} />
-        <Stat value={run.steps.toLocaleString()} label="instructions executed" />
+        <Stat value={view.emitted} label={`bytes emitted of ${view.out.length} shown`} />
+        <Stat value={view.steps.toLocaleString()} label="instructions executed" />
         <Stat
-          value={run.head}
-          label={`head at cell ${run.head}${run.halted ? ' — program halted' : ''}`}
+          value={view.head}
+          label={`head at cell ${view.head}${view.halted ? ' — program halted' : ''}`}
         />
       </div>
 
-      {run.stepLimited && (
+      {view.stepLimited && (
         <div className="claim claim--caveat" style={{ marginTop: 16 }}>
           <p className="claim__text">
             <strong>Step limit reached.</strong> This program had not emitted T
@@ -714,10 +648,10 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
           </p>
         </div>
       )}
-      {run.unmatched > 0 && (
+      {view.unmatched > 0 && (
         <div className="claim claim--caveat" style={{ marginTop: 16 }}>
           <p className="claim__text">
-            <strong>{run.unmatched} unmatched bracket{run.unmatched === 1 ? '' : 's'}.</strong>{' '}
+            <strong>{view.unmatched} unmatched bracket{view.unmatched === 1 ? '' : 's'}.</strong>{' '}
             Treated as a no-op here — the reading the paper&rsquo;s own Table 1
             programs require, since its Fibonacci example has one unmatched
             bracket and only the no-op reading makes it emit 1, 1, 2, 3, 5, 8. A
@@ -734,17 +668,28 @@ function BfExplorer({ macros, cellModulus }: { macros: BfMacro[]; cellModulus: n
   )
 }
 
-/** Syntax-highlighted program, marking macro tokens the way Table 4 does. */
-function ProgramView({ src, macros }: { src: string; macros: BfMacro[] }) {
+/**
+ * Syntax-highlighted program, marking macro tokens the way Table 4 does, and
+ * the instruction about to execute while a replay is running.
+ *
+ * `cursor` is an index into `src`, not into the expansion, which is what
+ * sourceIndexOfPc spends its time computing: the highlight has to land on the
+ * character the reader typed, and a macro token is one character standing for
+ * several.
+ */
+function ProgramView({
+  src, macros, cursor = null,
+}: { src: string; macros: BfMacro[]; cursor?: number | null }) {
   const macroTokens = new Set(macros.map((m) => m.token))
   return (
     <div className="program">
       {[...src].map((c, i) => (
         <span
           key={i}
-          className={
-            macroTokens.has(c) ? 'program__macro' : 'program__op'
-          }
+          className={[
+            macroTokens.has(c) ? 'program__macro' : 'program__op',
+            i === cursor ? 'program__pc' : '',
+          ].filter(Boolean).join(' ')}
         >
           {c}
         </span>

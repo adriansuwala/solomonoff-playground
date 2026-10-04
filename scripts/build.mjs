@@ -16,6 +16,8 @@ await build({
   root,
   configFile: false,
   logLevel: 'info',
+  // Must stay in sync with vite.config.ts; this entry does not read that file.
+  base: './',
   plugins: [react()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) },

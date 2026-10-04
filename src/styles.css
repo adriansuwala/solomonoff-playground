@@ -247,6 +247,14 @@ table.data th, table.data td {
   white-space: nowrap;
 }
 
+/*
+ * A column is left-aligned as a unit -- header and body together. Setting this
+ * on `td` alone (which the pages used to do with an inline style) left the `th`
+ * right-aligned over it, so headers hung off the right edge above text that ran
+ * left. Mark the whole column, on both cells, and the two always agree.
+ */
+table.data th.left, table.data td.left { text-align: left; }
+
 table.data th {
   color: var(--text-muted);
   font-weight: 600;
@@ -343,6 +351,47 @@ td.worst { color: var(--text-faint); }
 .program__op { color: var(--accent); }
 .program__macro { color: #f0883e; font-weight: 600; }
 .program__prefix { color: var(--text-faint); }
+
+/*
+ * The instruction the machine is about to execute, during playback. A filled
+ * block rather than a colour change: the cursor moves one character at a time
+ * and a hue shift alone is easy to lose track of in a long expansion. Solid
+ * fill plus a dark glyph reads at a glance, which is the whole point.
+ */
+.program__pc {
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------------------- math */
+
+/*
+ * KaTeX brings its own stylesheet; these rules only place it. KaTeX defaults to
+ * a serif face, which fights the sans-serif page body -- inherit instead.
+ */
+.math { font-family: inherit; }
+.math--inline { font-size: 0.95em; }
+.math--display {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px 16px;
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  font-size: 14px;
+}
+/* Multiple lines of one equation: let them sit closer than separate blocks. */
+.math--display + .math--display { margin-top: -6px; }
+
+/*
+ * KaTeX inherits colour, but not the link colour, and its \text{} runs come out
+ * at body size. Both read wrong on a dark ground.
+ */
+.math .katex { color: var(--text); }
+.math .katex-display { margin: 0; }
+.math .mord.text, .math .katex .text { color: var(--text); }
 
 .tape { display: flex; gap: 2px; flex-wrap: wrap; }
 .tape__cell {

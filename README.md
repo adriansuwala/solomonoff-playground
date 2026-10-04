@@ -43,11 +43,18 @@ npm run typecheck      # tsc, strict
 npm test               # 76 unit tests: scale/fit helpers + the ICL derivations
 npm run lint           # eslint, flat config
 npm run build          # typecheck + production build -> dist/
+npm run preview        # serve dist/ at http://localhost:4173
 ```
 
 `npm run build` calls `scripts/build.mjs` rather than `vite build` directly: the
 shell guard in this environment pattern-matches that literal string and refuses it
 as a long-lived dev server, which it is not.
+
+**`dist/` must be served over HTTP — opening `dist/index.html` as a `file://` URL
+will always give a blank page.** The bundle is ES modules, which the browser
+fetches under CORS, and `file://` documents have a `null` origin that no module
+load is permitted from. Relative asset paths (`base: './'`) do not help; use
+`npm run preview`, or any static server rooted at `dist/`.
 
 ## How the pieces fit
 
