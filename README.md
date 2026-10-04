@@ -33,7 +33,7 @@ from the vendored figure data:
 
 ```bash
 npm run data:build     # tools/build_data.py -> public/data/*.json
-npm run data:verify    # 134 assertions against the paper's own artefacts
+npm run data:verify    # 152 assertions against the paper's own artefacts
 ```
 
 Other scripts:
@@ -41,6 +41,7 @@ Other scripts:
 ```bash
 npm run typecheck      # tsc, strict
 npm test               # unit tests for the scale/fit helpers
+npm run lint           # eslint, flat config
 npm run build          # typecheck + production build -> dist/
 ```
 
@@ -56,7 +57,7 @@ tools/paper_refs.py       single source of truth: section refs, corpus names,
 tools/build_data.py       vendored data -> public/data/*.json
                           imports the authors' scaling_analysis.py for the
                           frontier construction and power-law fits
-tools/verify_data.py      re-derives and diffs against the authors' .tex (134 checks)
+tools/verify_data.py      re-derives and diffs against the authors' .tex (152 checks)
 tools/measure_local.py    scores released checkpoints on this machine (needs torch)
 vendor/spp/               the authors' repo at 2c25ed6, committed as reference data
 src/data/types.ts         mirrors the bundle; hand-maintained and cross-checked
