@@ -202,9 +202,9 @@ function TaskTable({ meta }: { meta: Meta }) {
         <thead>
           <tr>
             <th>Task</th>
-            <th style={{ textAlign: 'left' }}>What it does</th>
-            <th style={{ textAlign: 'left' }}>What it isolates</th>
-            <th style={{ textAlign: 'left' }}>In the released bundle</th>
+            <th className="left">What it does</th>
+            <th className="left">What it isolates</th>
+            <th className="left">In the released bundle</th>
           </tr>
         </thead>
         <tbody>
@@ -215,11 +215,11 @@ function TaskTable({ meta }: { meta: Meta }) {
             return (
               <tr key={key}>
                 <td>{info.label}</td>
-                <td style={{ textAlign: 'left', whiteSpace: 'normal' }}>
+                <td className="left" style={{ whiteSpace: 'normal' }}>
                   {info.blurb}
                 </td>
-                <td style={{ textAlign: 'left' }}>{CAPABILITY[key] ?? '—'}</td>
-                <td style={{ textAlign: 'left' }}>
+                <td className="left">{CAPABILITY[key] ?? '—'}</td>
+                <td className="left">
                   {file ? <code>{file}</code> : 'not measured'}
                 </td>
               </tr>
